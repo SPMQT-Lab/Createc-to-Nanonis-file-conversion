@@ -3,14 +3,16 @@
 import json
 import logging
 import queue
+import re as _re
 import threading
 import tkinter as tk
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 from typing import Callable, List, Optional
 import webbrowser
 
+import numpy as np
 from PIL import Image, ImageTk
 
 CONFIG_PATH     = Path.home() / ".probeflow_config.json"
@@ -44,10 +46,14 @@ THEMES = {
         "status_bg":  "#313244",
         "status_fg":  "#6c7086",
         "card_bg":    "#313244",
-        "card_sel":   "#89b4fa",
+        "card_sel":   "#4a4f6a",
         "card_fg":    "#cdd6f4",
-        "tab_act":    "#45475a",
-        "tab_inact":  "#313244",
+        "tab_act":    "#313244",
+        "tab_inact":  "#1e1e2e",
+        "tree_bg":    "#181825",
+        "tree_fg":    "#cdd6f4",
+        "tree_sel":   "#45475a",
+        "tree_head":  "#313244",
     },
     "light": {
         "bg":         "#f8f9fa",
@@ -68,35 +74,77 @@ THEMES = {
         "main_bg":    "#eef6fc",
         "status_bg":  "#f5f5f5",
         "status_fg":  "#6c757d",
-        "card_bg":    "#d0e8f8",
-        "card_sel":   "#3273dc",
+        "card_bg":    "#d0e4f4",
+        "card_sel":   "#b8d4ee",
         "card_fg":    "#1e1e2e",
         "tab_act":    "#ffffff",
         "tab_inact":  "#d8eaf8",
+        "tree_bg":    "#ffffff",
+        "tree_fg":    "#1e1e2e",
+        "tree_sel":   "#cce0f5",
+        "tree_head":  "#e8f0f8",
     },
 }
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Data model
+# Colormaps
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _make_lut(name: str) -> np.ndarray:
+    x = np.linspace(0, 1, 256)
+    if name == "hot":
+        r = np.clip(x * 3.0,       0.0, 1.0)
+        g = np.clip(x * 3.0 - 1.0, 0.0, 1.0)
+        b = np.clip(x * 3.0 - 2.0, 0.0, 1.0)
+    elif name == "gray":
+        r = g = b = x
+    elif name == "viridis":
+        r = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.267, 0.127, 0.128, 0.479, 0.993])
+        g = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.005, 0.290, 0.566, 0.798, 0.906])
+        b = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.329, 0.528, 0.551, 0.271, 0.144])
+    elif name == "plasma":
+        r = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.050, 0.490, 0.798, 0.974, 0.940])
+        g = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.030, 0.011, 0.200, 0.556, 0.975])
+        b = np.interp(x, [0, 0.25, 0.5, 0.75, 1], [0.530, 0.680, 0.360, 0.035, 0.131])
+    else:
+        r = np.clip(x * 3.0, 0.0, 1.0)
+        g = np.clip(x * 3.0 - 1.0, 0.0, 1.0)
+        b = np.clip(x * 3.0 - 2.0, 0.0, 1.0)
+    return (np.stack([r, g, b], axis=1) * 255).astype(np.uint8)
+
+_LUTS: dict = {}
+CMAP_DISPLAY = ["Hot", "Gray", "Viridis", "Plasma"]
+CMAP_KEY     = {d: d.lower() for d in CMAP_DISPLAY}
+
+def _get_lut(name: str) -> np.ndarray:
+    if name not in _LUTS:
+        _LUTS[name] = _make_lut(name)
+    return _LUTS[name]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SXM data model & rendering
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLANE_NAMES = ["Z fwd", "Z bwd", "I fwd", "I bwd"]
+
 @dataclass
-class DatGroup:
-    stem:    str
-    pngs:    List[Path] = field(default_factory=list)
-    sxm:     Optional[Path] = None
-    preview: Optional[Path] = None   # preferred Z_forward PNG
+class SxmFile:
+    path: Path
+    stem: str
+    Nx:   int = 512
+    Ny:   int = 512
 
 
 def parse_sxm_header(sxm_path: Path) -> dict:
-    """Read the ASCII header section of an .sxm file into a key->value dict."""
     params: dict = {}
     current_key: Optional[str] = None
-    lines_buf: List[str] = []
+    buf: List[str] = []
 
     def _flush():
         if current_key is not None:
-            params[current_key] = " ".join(lines_buf).strip()
+            params[current_key] = " ".join(buf).strip()
 
     try:
         with open(sxm_path, "rb") as fh:
@@ -107,42 +155,78 @@ def parse_sxm_header(sxm_path: Path) -> dict:
                 if line.startswith(":") and line.endswith(":") and len(line) > 2:
                     _flush()
                     current_key = line[1:-1]
-                    lines_buf = []
+                    buf = []
                 elif current_key is not None:
                     s = line.strip()
                     if s:
-                        lines_buf.append(s)
+                        buf.append(s)
         _flush()
     except Exception:
         pass
     return params
 
 
-def scan_output_folder(root: Path) -> List[DatGroup]:
-    """Find DatGroups under a ProbeFlow output folder."""
-    groups: dict = {}
-    root = Path(root)
+def _sxm_dims(hdr: dict):
+    nums = [int(x) for x in _re.findall(r"\d+", hdr.get("SCAN_PIXELS", ""))]
+    return (nums[0], nums[1]) if len(nums) >= 2 else (512, 512)
 
-    for png in sorted(root.rglob("*.png")):
-        stem = png.parents[1].name if png.parent.name == "pngs" else png.parent.name
-        if stem not in groups:
-            groups[stem] = {"pngs": [], "sxm": None}
-        groups[stem]["pngs"].append(png)
 
-    for sxm in sorted(root.rglob("*.sxm")):
-        s = sxm.stem
-        if s in groups:
-            groups[s]["sxm"] = sxm
+def render_sxm_plane(
+    sxm_path:  Path,
+    plane_idx: int   = 0,
+    colormap:  str   = "hot",
+    clip_low:  float = 1.0,
+    clip_high: float = 99.0,
+    size:      tuple = (148, 116),
+) -> Optional[Image.Image]:
+    """Read one data plane from an SXM file and return a colormapped PIL Image."""
+    try:
+        hdr = parse_sxm_header(sxm_path)
+        Nx, Ny = _sxm_dims(hdr)
+        if Nx <= 0 or Ny <= 0:
+            return None
 
-    result = []
-    for stem, data in sorted(groups.items()):
-        pngs = sorted(data["pngs"])
-        preview = (
-            next((p for p in pngs if "Z" in p.name and "forward" in p.name), None)
-            or (pngs[0] if pngs else None)
-        )
-        result.append(DatGroup(stem=stem, pngs=pngs, sxm=data["sxm"], preview=preview))
-    return result
+        data_offset = int((DEFAULT_CUSHION / "data_offset.txt").read_text().strip())
+        raw = sxm_path.read_bytes()
+
+        plane_bytes = Ny * Nx * 4
+        start = data_offset + plane_idx * plane_bytes
+        if start + plane_bytes > len(raw):
+            return None
+
+        arr = np.frombuffer(raw[start : start + plane_bytes], dtype=">f4").copy()
+        arr = arr.reshape((Ny, Nx))
+
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        vmin = float(np.percentile(finite, clip_low))
+        vmax = float(np.percentile(finite, clip_high))
+        if vmax <= vmin:
+            vmin, vmax = float(finite.min()), float(finite.max())
+        if vmax <= vmin:
+            return None
+
+        safe = np.where(np.isfinite(arr), arr, vmin).astype(np.float64)
+        u8 = np.clip((safe - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+        colored = _get_lut(colormap)[u8]
+        img = Image.fromarray(colored, mode="RGB")
+        img.thumbnail(size, Image.LANCZOS)
+        return img
+    except Exception:
+        return None
+
+
+def scan_sxm_folder(root: Path) -> List[SxmFile]:
+    entries = []
+    for sxm in sorted(Path(root).rglob("*.sxm")):
+        try:
+            hdr  = parse_sxm_header(sxm)
+            Nx, Ny = _sxm_dims(hdr)
+            entries.append(SxmFile(path=sxm, stem=sxm.stem, Nx=Nx, Ny=Ny))
+        except Exception:
+            entries.append(SxmFile(path=sxm, stem=sxm.stem))
+    return entries
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -151,8 +235,14 @@ def scan_output_folder(root: Path) -> List[DatGroup]:
 
 def load_config() -> dict:
     defaults = {
-        "dark_mode": False, "input_dir": "", "output_dir": "",
-        "do_png": True, "do_sxm": True, "clip_low": 1.0, "clip_high": 99.0,
+        "dark_mode":  False,
+        "input_dir":  "",
+        "output_dir": "",
+        "do_png":     False,
+        "do_sxm":     True,
+        "clip_low":   1.0,
+        "clip_high":  99.0,
+        "colormap":   "Hot",
     }
     try:
         if CONFIG_PATH.exists():
@@ -170,7 +260,7 @@ def save_config(cfg: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Logging helper
+# Queue log handler
 # ─────────────────────────────────────────────────────────────────────────────
 
 class QueueHandler(logging.Handler):
@@ -183,27 +273,29 @@ class QueueHandler(logging.Handler):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Thumbnail grid widget
+# Thumbnail grid
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ThumbnailGrid(tk.Frame):
-    CARD_W = 164
-    CARD_H = 148
-    IMG_W  = 148
-    IMG_H  = 116
+    CARD_W = 168
+    CARD_H = 152
+    IMG_W  = 152
+    IMG_H  = 120
     GAP    = 10
 
     def __init__(self, parent, on_select: Callable, theme: dict, **kw):
         super().__init__(parent, **kw)
-        self._on_select = on_select
-        self._t = theme
-        self._groups: List[DatGroup] = []
-        self._photos: dict = {}
-        self._selected: Optional[str] = None
+        self._on_select  = on_select
+        self._t          = theme
+        self._entries:   List[SxmFile] = []
+        self._photos:    dict = {}
+        self._selected:  Optional[str] = None
         self._load_token = object()
+        self._colormap   = "hot"
+        self._cached_cols = 1
 
         self._canvas = tk.Canvas(self, highlightthickness=0, bd=0)
-        self._vsb = tk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self._vsb    = tk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._vsb.set)
         self._canvas.pack(side="left", fill="both", expand=True)
         self._vsb.pack(side="right", fill="y")
@@ -213,32 +305,31 @@ class ThumbnailGrid(tk.Frame):
         self._canvas.bind("<Button-4>",   self._scroll)
         self._canvas.bind("<Button-5>",   self._scroll)
 
-    def load(self, groups: List[DatGroup]) -> None:
-        self._groups = groups
-        self._photos.clear()
-        self._selected = None
-        self._load_token = object()   # invalidates any running loader
+    def load(self, entries: List[SxmFile], colormap: str = "hot") -> None:
+        self._entries    = entries
+        self._colormap   = colormap
+        self._photos     = {}
+        self._selected   = None
+        self._load_token = object()
         self._canvas.delete("all")
         self._layout()
-        # Start lazy loading in background
         token = self._load_token
-        t = threading.Thread(target=self._load_bg, args=(groups, token), daemon=True)
-        t.start()
+        threading.Thread(
+            target=self._load_bg, args=(list(entries), colormap, token), daemon=True
+        ).start()
 
-    def _load_bg(self, groups: List[DatGroup], token) -> None:
-        """Load PIL images in background; push PhotoImage creation to main thread."""
-        for g in groups:
+    def set_colormap(self, colormap: str) -> None:
+        if colormap != self._colormap:
+            self.load(self._entries, colormap)
+
+    def _load_bg(self, entries: List[SxmFile], colormap: str, token) -> None:
+        for entry in entries:
             if token is not self._load_token:
                 return
-            if not g.preview or not g.preview.exists():
-                continue
-            try:
-                img = Image.open(g.preview).convert("RGB")
-                img.thumbnail((self.IMG_W, self.IMG_H), Image.LANCZOS)
-            except Exception:
-                continue
-            # PhotoImage must be created on main thread
-            self._canvas.after(0, self._place_photo, g.stem, img, token)
+            img = render_sxm_plane(entry.path, 0, colormap,
+                                   size=(self.IMG_W, self.IMG_H))
+            if img is not None:
+                self._canvas.after(0, self._place_photo, entry.stem, img, token)
 
     def _place_photo(self, stem: str, img: Image.Image, token) -> None:
         if token is not self._load_token:
@@ -247,7 +338,6 @@ class ThumbnailGrid(tk.Frame):
             self._photos[stem] = ImageTk.PhotoImage(img)
         except Exception:
             return
-        # Redraw only the one card that just loaded
         self._redraw_card(stem)
 
     def _layout(self) -> None:
@@ -256,78 +346,65 @@ class ThumbnailGrid(tk.Frame):
             self.after(50, self._layout)
             return
         cols = max(1, (cw + self.GAP) // (self.CARD_W + self.GAP))
+        self._cached_cols = cols
         t = self._t
         self._canvas.delete("all")
 
-        for i, g in enumerate(self._groups):
-            row, col = divmod(i, cols)
-            x0 = col * (self.CARD_W + self.GAP) + self.GAP
-            y0 = row * (self.CARD_H + self.GAP) + self.GAP
-            x1, y1 = x0 + self.CARD_W, y0 + self.CARD_H
-            sel = (g.stem == self._selected)
+        for i, entry in enumerate(self._entries):
+            self._draw_card(i, entry, cols, t)
 
-            self._canvas.create_rectangle(
-                x0, y0, x1, y1,
-                fill=t["card_sel"] if sel else t["card_bg"],
-                outline=t["accent_bg"] if sel else t["sep"],
-                width=2 if sel else 1,
-                tags=("card", f"s:{g.stem}"),
-            )
-            photo = self._photos.get(g.stem)
-            if photo:
-                self._canvas.create_image(
-                    x0 + self.CARD_W // 2, y0 + self.IMG_H // 2 + 4,
-                    image=photo, tags=("card", f"s:{g.stem}"),
-                )
-            label = g.stem if len(g.stem) <= 20 else g.stem[:18] + ".."
-            self._canvas.create_text(
-                x0 + self.CARD_W // 2, y1 - 11,
-                text=label, font=("Helvetica", 7),
-                fill="#ffffff" if sel else t["card_fg"],
-                tags=("card", f"s:{g.stem}"),
-            )
-
-        total_rows = max(1, (len(self._groups) + cols - 1) // cols)
-        total_h = total_rows * (self.CARD_H + self.GAP) + self.GAP
+        total_rows = max(1, (len(self._entries) + cols - 1) // cols)
+        total_h    = total_rows * (self.CARD_H + self.GAP) + self.GAP
         self._canvas.configure(scrollregion=(0, 0, cw, max(total_h, 1)))
         self._canvas.tag_bind("card", "<Button-1>", self._on_click)
-        self._cached_cols = cols
 
-    def _redraw_card(self, stem: str) -> None:
-        """Update a single card in-place once its photo has loaded."""
-        cols = getattr(self, "_cached_cols", 1)
-        t = self._t
-        idx = next((i for i, g in enumerate(self._groups) if g.stem == stem), None)
-        if idx is None:
-            return
-        g = self._groups[idx]
-        row, col = divmod(idx, cols)
+    def _draw_card(self, i: int, entry: SxmFile, cols: int, t: dict) -> None:
+        row, col = divmod(i, cols)
         x0 = col * (self.CARD_W + self.GAP) + self.GAP
         y0 = row * (self.CARD_H + self.GAP) + self.GAP
         x1, y1 = x0 + self.CARD_W, y0 + self.CARD_H
-        sel = (stem == self._selected)
-        # Remove old items for this card and redraw
-        self._canvas.delete(f"s:{stem}")
+        sel = (entry.stem == self._selected)
+        tag = f"s:{entry.stem}"
+
         self._canvas.create_rectangle(
             x0, y0, x1, y1,
             fill=t["card_sel"] if sel else t["card_bg"],
             outline=t["accent_bg"] if sel else t["sep"],
-            width=2 if sel else 1,
-            tags=("card", f"s:{stem}"),
+            width=3 if sel else 1,
+            tags=("card", tag),
         )
-        photo = self._photos.get(stem)
+        photo = self._photos.get(entry.stem)
         if photo:
             self._canvas.create_image(
                 x0 + self.CARD_W // 2, y0 + self.IMG_H // 2 + 4,
-                image=photo, tags=("card", f"s:{stem}"),
+                image=photo, tags=("card", tag),
             )
-        label = stem if len(stem) <= 20 else stem[:18] + ".."
+        else:
+            # Placeholder while loading
+            self._canvas.create_rectangle(
+                x0 + 8, y0 + 4, x1 - 8, y0 + self.IMG_H + 4,
+                fill=t["entry_bg"] if "entry_bg" in t else "#444",
+                outline="", tags=("card", tag),
+            )
+            self._canvas.create_text(
+                x0 + self.CARD_W // 2, y0 + self.IMG_H // 2 + 4,
+                text="loading...", font=("Helvetica", 7),
+                fill=t["sub_fg"], tags=("card", tag),
+            )
+        label = entry.stem if len(entry.stem) <= 22 else entry.stem[:20] + ".."
         self._canvas.create_text(
-            x0 + self.CARD_W // 2, y1 - 11,
+            x0 + self.CARD_W // 2, y1 - 12,
             text=label, font=("Helvetica", 7),
-            fill="#ffffff" if sel else t["card_fg"],
-            tags=("card", f"s:{stem}"),
+            fill=t["accent_fg"] if sel else t["card_fg"],
+            tags=("card", tag),
         )
+
+    def _redraw_card(self, stem: str) -> None:
+        idx = next((i for i, e in enumerate(self._entries) if e.stem == stem), None)
+        if idx is None:
+            return
+        self._canvas.delete(f"s:{stem}")
+        self._draw_card(idx, self._entries[idx], self._cached_cols, self._t)
         self._canvas.tag_bind("card", "<Button-1>", self._on_click)
 
     def _on_click(self, event: tk.Event) -> None:
@@ -337,11 +414,11 @@ class ThumbnailGrid(tk.Frame):
         for tag in self._canvas.gettags(items[0]):
             if tag.startswith("s:"):
                 stem = tag[2:]
-                for g in self._groups:
-                    if g.stem == stem:
+                for entry in self._entries:
+                    if entry.stem == stem:
                         self._selected = stem
                         self._layout()
-                        self._on_select(g)
+                        self._on_select(entry)
                         return
 
     def _scroll(self, event: tk.Event) -> None:
@@ -390,8 +467,8 @@ def _show_about(parent: tk.Tk, dark: bool) -> None:
     row("Createc -> Nanonis File Conversion", 10, color=t["sub_fg"])
     tk.Frame(win, height=1, bg=t["sep"]).pack(fill="x", padx=24, pady=10)
     row("Developed at SPMQT-Lab", 10, bold=True)
-    row("Under the supervision of Dr. Peter Jacobson\nThe University of Queensland", 9,
-        color=t["sub_fg"])
+    row("Under the supervision of Dr. Peter Jacobson\nThe University of Queensland",
+        9, color=t["sub_fg"])
     tk.Frame(win, height=1, bg=t["sep"]).pack(fill="x", padx=24, pady=10)
     row("Original code by Rohan Platts", 10, bold=True)
     row("The core conversion algorithms were built by Rohan Platts.\n"
@@ -412,32 +489,35 @@ class ProbeFlowGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("ProbeFlow")
-        self.root.minsize(900, 620)
+        self.root.minsize(960, 650)
         self.root.resizable(True, True)
 
         self.cfg = load_config()
         self.log_queue: queue.Queue = queue.Queue()
-        self._running   = False
-        self._adv_vis   = False
-        self._mode      = "convert"   # "convert" | "browse"
+        self._running = False
+        self._adv_vis = False
+        self._mode    = "browse"
 
         self.dark_mode  = tk.BooleanVar(value=self.cfg["dark_mode"])
         self.input_dir  = tk.StringVar(value=self.cfg["input_dir"])
         self.output_dir = tk.StringVar(value=self.cfg["output_dir"])
-        self.do_png     = tk.BooleanVar(value=self.cfg["do_png"])
-        self.do_sxm     = tk.BooleanVar(value=self.cfg["do_sxm"])
+        self.do_png     = tk.BooleanVar(value=self.cfg.get("do_png", False))
+        self.do_sxm     = tk.BooleanVar(value=self.cfg.get("do_sxm", True))
         self.clip_low   = tk.DoubleVar(value=self.cfg["clip_low"])
         self.clip_high  = tk.DoubleVar(value=self.cfg["clip_high"])
-        self._status    = tk.StringVar(value="Ready")
+        self._cmap_var  = tk.StringVar(value=self.cfg.get("colormap", "Hot"))
+        self._status    = tk.StringVar(value="Open a folder to browse scans")
+        self._sel_info  = tk.StringVar(value="")
+        self._n_loaded  = 0
+
+        self._ch_photos: List[Optional[ImageTk.PhotoImage]] = [None] * 4
 
         self._build_ui()
         self._apply_theme()
         self._poll_log()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Build
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Build ────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         self._build_navbar()
@@ -450,6 +530,7 @@ class ProbeFlowGUI:
         nav.pack_propagate(False)
         self._nav = nav
 
+        # Logo
         try:
             img = Image.open(LOGO_PATH).convert("RGBA")
             img.thumbnail((120, 44), Image.LANCZOS)
@@ -457,9 +538,9 @@ class ProbeFlowGUI:
             img.putdata([(r, g, b, 0) if r > 220 and g > 220 and b > 220 else (r, g, b, a)
                          for r, g, b, a in data])
             self._nav_logo = ImageTk.PhotoImage(img)
-            logo_lbl = tk.Label(nav, image=self._nav_logo, bg=NAVBAR_BG, cursor="hand2")
-            logo_lbl.pack(side="left", padx=(8, 0), pady=6)
-            logo_lbl.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
+            lbl = tk.Label(nav, image=self._nav_logo, bg=NAVBAR_BG, cursor="hand2")
+            lbl.pack(side="left", padx=(8, 0), pady=6)
+            lbl.bind("<Button-1>", lambda e: webbrowser.open(GITHUB_URL))
         except Exception:
             pass
 
@@ -470,19 +551,16 @@ class ProbeFlowGUI:
         tk.Label(tf, text="Createc -> Nanonis", font=("Helvetica", 8),
                  bg=NAVBAR_BG, fg="#a8c8f0").pack(anchor="w")
 
-        def _navbtn(text, cmd):
+        def _nb(text, cmd):
             return tk.Button(nav, text=text, bg=NAVBAR_BG, fg=NAVBAR_FG,
                              relief="flat", cursor="hand2", font=("Helvetica", 9),
                              bd=0, padx=10, activebackground="#2563c0",
                              activeforeground=NAVBAR_FG, command=cmd)
 
-        _navbtn("About",  lambda: _show_about(self.root, self.dark_mode.get())).pack(side="right", pady=14)
-        _navbtn("GitHub", lambda: webbrowser.open(GITHUB_URL)).pack(side="right", pady=14)
-
-        self._open_btn = _navbtn("Open folder", self._open_browse_folder)
-        self._open_btn.pack(side="right", pady=14)
-
-        self._theme_btn = _navbtn(
+        _nb("About",  lambda: _show_about(self.root, self.dark_mode.get())).pack(side="right", pady=14)
+        _nb("GitHub", lambda: webbrowser.open(GITHUB_URL)).pack(side="right", pady=14)
+        _nb("Open folder", self._open_browse_folder).pack(side="right", pady=14)
+        self._theme_btn = _nb(
             "Light mode" if self.dark_mode.get() else "Dark mode",
             self._toggle_theme,
         )
@@ -493,58 +571,62 @@ class ProbeFlowGUI:
         body.pack(fill="both", expand=True)
         self._body = body
 
-        # Left: content area with mode tabs
+        # Left: tab bar + content panels
         left = tk.Frame(body)
         left.pack(side="left", fill="both", expand=True)
         self._left = left
 
-        # Tab bar
         tabbar = tk.Frame(left)
         tabbar.pack(fill="x")
         self._tabbar = tabbar
-        self._tab_convert = tk.Button(tabbar, text="Convert",
-                                      font=("Helvetica", 9, "bold"),
-                                      relief="flat", cursor="hand2", bd=0, padx=16, pady=6,
-                                      command=lambda: self._switch_mode("convert"))
-        self._tab_convert.pack(side="left")
         self._tab_browse = tk.Button(tabbar, text="Browse",
                                      font=("Helvetica", 9, "bold"),
-                                     relief="flat", cursor="hand2", bd=0, padx=16, pady=6,
+                                     relief="flat", cursor="hand2", bd=0,
+                                     padx=16, pady=6,
                                      command=lambda: self._switch_mode("browse"))
         self._tab_browse.pack(side="left")
+        self._tab_convert = tk.Button(tabbar, text="Convert",
+                                      font=("Helvetica", 9, "bold"),
+                                      relief="flat", cursor="hand2", bd=0,
+                                      padx=16, pady=6,
+                                      command=lambda: self._switch_mode("convert"))
+        self._tab_convert.pack(side="left")
+
+        # Browse panel (default)
+        self._browse_frame = tk.Frame(left)
+        self._grid = ThumbnailGrid(
+            self._browse_frame, self._on_entry_select,
+            THEMES["dark" if self.dark_mode.get() else "light"],
+        )
+        self._grid.pack(fill="both", expand=True)
 
         # Convert panel
         self._conv_frame = tk.Frame(left)
         self._build_convert_panel(self._conv_frame)
 
-        # Browse panel
-        self._browse_frame = tk.Frame(left)
-        self._grid = ThumbnailGrid(
-            self._browse_frame, self._on_group_select,
-            THEMES["dark" if self.dark_mode.get() else "light"],
-        )
-        self._grid.pack(fill="both", expand=True)
+        # Show browse by default
+        self._browse_frame.pack(fill="both", expand=True)
 
-        # Show convert by default
-        self._conv_frame.pack(fill="both", expand=True)
-
-        # Right sidebar (290px)
-        self._sidebar = tk.Frame(body, width=290)
+        # Right sidebar (300px)
+        self._sidebar = tk.Frame(body, width=300)
         self._sidebar.pack(side="right", fill="y")
         self._sidebar.pack_propagate(False)
-
-        self._conv_sidebar = tk.Frame(self._sidebar)
-        self._build_convert_sidebar(self._conv_sidebar)
 
         self._browse_sidebar = tk.Frame(self._sidebar)
         self._build_browse_sidebar(self._browse_sidebar)
 
-        self._conv_sidebar.pack(fill="both", expand=True)
+        self._conv_sidebar = tk.Frame(self._sidebar)
+        self._build_convert_sidebar(self._conv_sidebar)
+
+        # Default: browse sidebar
+        self._browse_sidebar.pack(fill="both", expand=True)
+
+    # ── Convert panel ────────────────────────────────────────────────────────
 
     def _build_convert_panel(self, p: tk.Frame) -> None:
         self._folder_row(p, "Input folder:",  self.input_dir,  self._browse_input)
         self._folder_row(p, "Output folder:", self.output_dir, self._browse_output)
-        self._hsep(p)
+        tk.Frame(p, height=1).pack(fill="x", padx=12, pady=6)
 
         log_hdr = tk.Frame(p)
         log_hdr.pack(fill="x", padx=16, pady=(2, 0))
@@ -558,27 +640,26 @@ class ProbeFlowGUI:
         self.log_text.pack(fill="both", expand=True, padx=16, pady=(2, 8))
 
     def _build_convert_sidebar(self, s: tk.Frame) -> None:
-        self._sec(s, "Convert to")
+        self._slbl(s, "Output format")
         cbf = tk.Frame(s)
         cbf.pack(fill="x", padx=16, pady=4)
         self.png_cb = tk.Checkbutton(cbf, text="PNG preview",   variable=self.do_png)
         self.sxm_cb = tk.Checkbutton(cbf, text="SXM (Nanonis)", variable=self.do_sxm)
         self.png_cb.pack(anchor="w", pady=2)
         self.sxm_cb.pack(anchor="w", pady=2)
-        self._hsep(s)
+        tk.Frame(s, height=1).pack(fill="x", padx=12, pady=6)
 
         adv_hdr = tk.Frame(s)
-        adv_hdr.pack(fill="x", padx=12, pady=(2, 0))
+        adv_hdr.pack(fill="x", padx=12)
         self._adv_btn = tk.Button(adv_hdr, text="[+] Advanced",
                                   relief="flat", bd=0, cursor="hand2",
                                   font=("Helvetica", 9), anchor="w",
                                   command=self._toggle_adv)
         self._adv_btn.pack(side="left")
-
         self._adv_frame = tk.Frame(s)
-        self._slider_row(self._adv_frame, "Clip low (%):",  self.clip_low,  0.0,  10.0)
+        self._slider_row(self._adv_frame, "Clip low (%):",  self.clip_low,   0.0,  10.0)
         self._slider_row(self._adv_frame, "Clip high (%):", self.clip_high, 90.0, 100.0)
-        self._hsep(s)
+        tk.Frame(s, height=1).pack(fill="x", padx=12, pady=6)
 
         rf = tk.Frame(s)
         rf.pack(fill="x", padx=16, pady=10)
@@ -586,73 +667,102 @@ class ProbeFlowGUI:
                                  font=("Helvetica", 12, "bold"),
                                  relief="flat", cursor="hand2", command=self._run)
         self.run_btn.pack(fill="x", ipady=8)
-        self._hsep(s)
+        tk.Frame(s, height=1).pack(fill="x", padx=12, pady=6)
 
-        # File count label
-        self._fcount_var = tk.StringVar(value="No folder selected")
-        self._fcount_lbl = tk.Label(s, textvariable=self._fcount_var,
-                                    font=("Helvetica", 8), anchor="w",
-                                    wraplength=250, justify="left")
-        self._fcount_lbl.pack(fill="x", padx=14, pady=4)
-
+        self._fcount_var = tk.StringVar(value="")
+        tk.Label(s, textvariable=self._fcount_var, font=("Helvetica", 8),
+                 anchor="w", wraplength=260, justify="left").pack(fill="x", padx=14)
         self.input_dir.trace_add("write", lambda *_: self._update_count())
 
-        self._conv_footer = tk.Label(
-            s,
-            text="SPMQT-Lab  |  Dr. Peter Jacobson\nThe University of Queensland\nOriginal code by Rohan Platts",
-            font=("Helvetica", 7), anchor="center", justify="center",
-        )
-        self._conv_footer.pack(side="bottom", pady=8)
+        tk.Label(s,
+                 text="SPMQT-Lab  |  Dr. Peter Jacobson\nThe University of Queensland\nOriginal code by Rohan Platts",
+                 font=("Helvetica", 7), justify="center",
+                 ).pack(side="bottom", pady=8)
+
+    # ── Browse sidebar ────────────────────────────────────────────────────────
 
     def _build_browse_sidebar(self, s: tk.Frame) -> None:
-        self._sec(s, "Selected scan")
+        # ── Header: file info ────────────────────────────────────────────────
+        hf = tk.Frame(s)
+        hf.pack(fill="x", padx=10, pady=(10, 4))
+        self._sel_name = tk.Label(hf, text="No scan selected",
+                                  font=("Helvetica", 9, "bold"), anchor="w",
+                                  wraplength=270, justify="left")
+        self._sel_name.pack(fill="x")
+        self._sel_dim = tk.Label(hf, text="", font=("Helvetica", 8), anchor="w")
+        self._sel_dim.pack(fill="x")
 
-        # Channel thumbnails (2x2 grid of small images)
-        self._ch_frame = tk.Frame(s)
-        self._ch_frame.pack(fill="x", padx=8, pady=4)
+        tk.Frame(s, height=1).pack(fill="x", padx=10, pady=4)
+
+        # ── Colormap selector ────────────────────────────────────────────────
+        cf = tk.Frame(s)
+        cf.pack(fill="x", padx=12, pady=(0, 6))
+        tk.Label(cf, text="Colormap:", font=("Helvetica", 8), anchor="w",
+                 width=10).pack(side="left")
+        self._cmap_cb = ttk.Combobox(cf, textvariable=self._cmap_var,
+                                     values=CMAP_DISPLAY, state="readonly", width=9)
+        self._cmap_cb.pack(side="left", padx=4)
+        self._cmap_cb.bind("<<ComboboxSelected>>", self._on_colormap_change)
+
+        tk.Frame(s, height=1).pack(fill="x", padx=10, pady=4)
+
+        # ── 4-channel thumbnails (2x2) ───────────────────────────────────────
+        self._slbl(s, "Channels")
+        self._ch_outer = tk.Frame(s)
+        self._ch_outer.pack(fill="x", padx=8, pady=4)
         self._ch_labels: List[tk.Label] = []
-        self._ch_photos: List[Optional[ImageTk.PhotoImage]] = []
-        for row in range(2):
-            for col in range(2):
-                lbl = tk.Label(self._ch_frame, relief="flat", bd=1)
-                lbl.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
-                self._ch_labels.append(lbl)
-                self._ch_photos.append(None)
-        self._ch_frame.grid_columnconfigure(0, weight=1)
-        self._ch_frame.grid_columnconfigure(1, weight=1)
+        self._ch_name_labels: List[tk.Label] = []
+        for i, name in enumerate(PLANE_NAMES):
+            r, c = divmod(i, 2)
+            cell = tk.Frame(self._ch_outer)
+            cell.grid(row=r * 2, column=c, padx=4, pady=2, sticky="nsew")
+            img_lbl = tk.Label(cell, relief="flat", bd=1)
+            img_lbl.pack()
+            nm_lbl = tk.Label(cell, text=name, font=("Helvetica", 7), anchor="center")
+            nm_lbl.pack()
+            self._ch_labels.append(img_lbl)
+            self._ch_name_labels.append(nm_lbl)
+        self._ch_outer.grid_columnconfigure(0, weight=1)
+        self._ch_outer.grid_columnconfigure(1, weight=1)
 
-        self._ch_name_lbl = tk.Label(s, text="", font=("Helvetica", 8, "bold"),
-                                     anchor="w", wraplength=250)
-        self._ch_name_lbl.pack(fill="x", padx=14, pady=(0, 4))
+        tk.Frame(s, height=1).pack(fill="x", padx=10, pady=4)
 
-        self._hsep(s)
-        self._sec(s, "Metadata")
+        # ── Metadata table ────────────────────────────────────────────────────
+        meta_top = tk.Frame(s)
+        meta_top.pack(fill="x", padx=10, pady=(4, 2))
+        self._slbl(meta_top, "Metadata", inline=True)
+        self._search_var = tk.StringVar()
+        search_entry = tk.Entry(meta_top, textvariable=self._search_var,
+                                font=("Helvetica", 8), width=12, relief="flat", bd=1)
+        search_entry.pack(side="right")
+        self._search_var.trace_add("write", lambda *_: self._filter_metadata())
 
-        # Scrollable metadata text
         meta_frame = tk.Frame(s)
-        meta_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        meta_vsb = tk.Scrollbar(meta_frame, orient="vertical")
-        self._meta_text = tk.Text(meta_frame, wrap="word", relief="flat", bd=0,
-                                  font=("Courier", 8), state="disabled",
-                                  yscrollcommand=meta_vsb.set)
-        meta_vsb.configure(command=self._meta_text.yview)
-        self._meta_text.pack(side="left", fill="both", expand=True)
+        meta_frame.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+
+        style = ttk.Style()
+        style.configure("Meta.Treeview",
+                        rowheight=18, font=("Helvetica", 8),
+                        borderwidth=0, relief="flat")
+        style.configure("Meta.Treeview.Heading",
+                        font=("Helvetica", 8, "bold"))
+
+        self._tree = ttk.Treeview(meta_frame, columns=("p", "v"), show="headings",
+                                  height=14, style="Meta.Treeview")
+        self._tree.heading("p", text="Parameter")
+        self._tree.heading("v", text="Value")
+        self._tree.column("p", width=110, anchor="w", stretch=False)
+        self._tree.column("v", width=160, anchor="w")
+
+        meta_vsb = ttk.Scrollbar(meta_frame, orient="vertical",
+                                  command=self._tree.yview)
+        self._tree.configure(yscrollcommand=meta_vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
         meta_vsb.pack(side="right", fill="y")
 
-        # Key metadata fields to show (in order)
-        self._META_KEYS = [
-            ("Date",       ["REC_DATE", "REC_TIME"]),
-            ("Pixels",     ["SCAN_PIXELS"]),
-            ("Size (m)",   ["SCAN_RANGE"]),
-            ("Offset (m)", ["SCAN_OFFSET"]),
-            ("Bias (V)",   ["BIAS"]),
-            ("Scan dir",   ["SCAN_DIR"]),
-            ("Angle",      ["SCAN_ANGLE"]),
-            ("Temp (K)",   ["REC_TEMP"]),
-            ("Comment",    ["COMMENT"]),
-            ("Clip low",   ["Clip_percentile_Lower"]),
-            ("Clip high",  ["Clip_percentile_Higher"]),
-        ]
+        self._meta_rows: List[tuple] = []   # (param, value) pairs
+
+    # ── Status bar ────────────────────────────────────────────────────────────
 
     def _build_statusbar(self) -> None:
         bar = tk.Frame(self.root, height=28)
@@ -662,134 +772,140 @@ class ProbeFlowGUI:
         self._status_lbl = tk.Label(bar, textvariable=self._status,
                                     font=("Helvetica", 8), anchor="w")
         self._status_lbl.pack(side="left", padx=12)
+        self._sel_info_lbl = tk.Label(bar, textvariable=self._sel_info,
+                                      font=("Helvetica", 8), anchor="center")
+        self._sel_info_lbl.pack(side="left", expand=True)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Mode switching
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Mode switching ────────────────────────────────────────────────────────
 
     def _switch_mode(self, mode: str) -> None:
         if mode == self._mode:
             return
         self._mode = mode
-        t = THEMES["dark" if self.dark_mode.get() else "light"]
-
-        if mode == "convert":
-            self._browse_frame.pack_forget()
-            self._conv_frame.pack(fill="both", expand=True)
-            self._browse_sidebar.pack_forget()
-            self._conv_sidebar.pack(fill="both", expand=True)
-            self._status.set("Ready")
-        else:
+        if mode == "browse":
             self._conv_frame.pack_forget()
             self._browse_frame.pack(fill="both", expand=True)
             self._conv_sidebar.pack_forget()
             self._browse_sidebar.pack(fill="both", expand=True)
-            self._repaint(self._browse_sidebar, t, "sidebar")
-            n = len(self._grid._groups)
-            self._status.set(f"{n} scan(s) loaded" if n else "Open a folder to browse")
-
+            n = len(self._grid._entries)
+            self._status.set(f"{n} scan(s) loaded" if n else "Open a folder to browse scans")
+        else:
+            self._browse_frame.pack_forget()
+            self._conv_frame.pack(fill="both", expand=True)
+            self._browse_sidebar.pack_forget()
+            self._conv_sidebar.pack(fill="both", expand=True)
+            self._update_count()
         self._update_tabs()
         self._apply_theme()
 
     def _update_tabs(self) -> None:
         t = THEMES["dark" if self.dark_mode.get() else "light"]
-        for btn, name in ((self._tab_convert, "convert"), (self._tab_browse, "browse")):
+        for btn, name in ((self._tab_browse, "browse"),
+                          (self._tab_convert, "convert")):
             active = (self._mode == name)
-            btn.configure(
-                bg=t["tab_act"] if active else t["tab_inact"],
-                fg=t["fg"],
-                relief="flat",
-            )
+            btn.configure(bg=t["tab_act"] if active else t["tab_inact"], fg=t["fg"])
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Browse callbacks
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Browse actions ────────────────────────────────────────────────────────
 
     def _open_browse_folder(self) -> None:
-        d = filedialog.askdirectory(title="Open output folder to browse")
+        d = filedialog.askdirectory(title="Open folder containing .sxm files")
         if not d:
             return
         self._switch_mode("browse")
-        groups = scan_output_folder(Path(d))
-        self._grid.load(groups)
-        n = len(groups)
-        self._status.set(f"{n} scan(s) loaded from {d}")
+        entries = scan_sxm_folder(Path(d))
+        cmap = CMAP_KEY.get(self._cmap_var.get(), "hot")
+        self._grid.load(entries, cmap)
+        self._n_loaded = len(entries)
+        self._status.set(f"Selected: 0 / {self._n_loaded}")
         self._clear_browse_sidebar()
 
-    def _on_group_select(self, g: DatGroup) -> None:
-        self._ch_name_lbl.configure(text=g.stem)
-        self._load_channel_thumbnails(g.pngs)
-        self._load_metadata(g.sxm)
-        self._status.set(f"Selected: {g.stem}  |  {len(g.pngs)} channel(s)"
-                         + ("  |  SXM found" if g.sxm else "  |  no SXM"))
+    def _on_entry_select(self, entry: SxmFile) -> None:
+        self._sel_name.configure(text=entry.stem)
+        self._sel_dim.configure(text=f"{entry.Nx} x {entry.Ny} px")
+        self._sel_info.set(f"{entry.stem}.sxm  |  Z / Current  |  4 channels")
 
-    def _load_channel_thumbnails(self, pngs: List[Path]) -> None:
+        idx = next((i for i, e in enumerate(self._grid._entries)
+                    if e.stem == entry.stem), 0) + 1
+        self._status.set(f"Selected: {idx} / {self._n_loaded}")
+
+        self._load_channel_thumbnails(entry)
+        self._load_metadata(entry)
+
+    def _load_channel_thumbnails(self, entry: SxmFile) -> None:
         t = THEMES["dark" if self.dark_mode.get() else "light"]
-        # Show up to 4 channels in 2x2 grid
-        ordered = sorted(pngs)
-        # Z forward first, then Z backward, Current forward, Current backward
-        def _key(p):
-            n = p.name
-            return (0 if "Z" in n and "forward" in n else
-                    1 if "Z" in n and "backward" in n else
-                    2 if "Current" in n and "forward" in n else 3)
-        ordered = sorted(pngs, key=_key)[:4]
+        cmap = CMAP_KEY.get(self._cmap_var.get(), "hot")
 
-        for i in range(4):
-            if i < len(ordered) and ordered[i].exists():
-                try:
-                    img = Image.open(ordered[i]).convert("RGB")
-                    img.thumbnail((110, 90), Image.LANCZOS)
+        def _do():
+            for i, lbl in enumerate(self._ch_labels):
+                img = render_sxm_plane(entry.path, i, cmap, size=(110, 86))
+                if img:
                     photo = ImageTk.PhotoImage(img)
                     self._ch_photos[i] = photo
-                    self._ch_labels[i].configure(image=photo, bg=t["sidebar_bg"],
-                                                 text="", compound="none")
-                except Exception:
-                    self._ch_labels[i].configure(image="", text="err",
-                                                 bg=t["sidebar_bg"], fg=t["sub_fg"])
-            else:
-                self._ch_photos[i] = None
-                self._ch_labels[i].configure(image="", text="",
-                                             bg=t["sidebar_bg"])
+                    lbl.configure(image=photo, bg=t["sidebar_bg"])
+                else:
+                    self._ch_photos[i] = None
+                    lbl.configure(image="", bg=t["sidebar_bg"])
 
-    def _load_metadata(self, sxm: Optional[Path]) -> None:
-        self._meta_text.configure(state="normal")
-        self._meta_text.delete("1.0", "end")
+        threading.Thread(target=_do, daemon=True).start()
 
-        if sxm and sxm.exists():
-            hdr = parse_sxm_header(sxm)
-            lines = []
-            for label, keys in self._META_KEYS:
-                vals = [hdr.get(k, "").strip() for k in keys if hdr.get(k, "").strip()]
-                if vals:
-                    v = "  ".join(vals)
-                    lines.append(f"{label:<12}  {v}")
-            self._meta_text.insert("end", "\n".join(lines))
-        else:
-            self._meta_text.insert("end", "(no SXM file found)")
+    def _load_metadata(self, entry: SxmFile) -> None:
+        hdr = parse_sxm_header(entry.path)
+        # Build ordered rows: key SXM fields first, then the rest
+        priority = [
+            "REC_DATE", "REC_TIME", "SCAN_PIXELS", "SCAN_RANGE",
+            "SCAN_OFFSET", "SCAN_ANGLE", "SCAN_DIR", "BIAS",
+            "REC_TEMP", "ACQ_TIME", "SCAN_TIME", "COMMENT",
+            "Clip_percentile_Lower", "Clip_percentile_Higher",
+        ]
+        rows = []
+        seen = set()
+        for k in priority:
+            if k in hdr and hdr[k].strip():
+                rows.append((k, hdr[k].strip()))
+                seen.add(k)
+        for k, v in hdr.items():
+            if k not in seen and v.strip():
+                rows.append((k, v.strip()))
 
-        self._meta_text.configure(state="disabled")
+        self._meta_rows = rows
+        self._filter_metadata()
+
+    def _filter_metadata(self) -> None:
+        query = self._search_var.get().lower()
+        self._tree.delete(*self._tree.get_children())
+        for param, value in self._meta_rows:
+            if not query or query in param.lower() or query in value.lower():
+                self._tree.insert("", "end", values=(param, value))
 
     def _clear_browse_sidebar(self) -> None:
-        self._ch_name_lbl.configure(text="")
+        self._sel_name.configure(text="No scan selected")
+        self._sel_dim.configure(text="")
+        self._sel_info.set("")
         t = THEMES["dark" if self.dark_mode.get() else "light"]
         for i, lbl in enumerate(self._ch_labels):
             self._ch_photos[i] = None
-            lbl.configure(image="", text="", bg=t["sidebar_bg"])
-        self._meta_text.configure(state="normal")
-        self._meta_text.delete("1.0", "end")
-        self._meta_text.configure(state="disabled")
+            lbl.configure(image="", bg=t["sidebar_bg"])
+        self._meta_rows = []
+        self._tree.delete(*self._tree.get_children())
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Widget helpers
-    # ──────────────────────────────────────────────────────────────────────
+    def _on_colormap_change(self, _=None) -> None:
+        cmap = CMAP_KEY.get(self._cmap_var.get(), "hot")
+        self._grid.set_colormap(cmap)
+        # Reload channel thumbnails if something is selected
+        sel = self._grid._selected
+        if sel:
+            entry = next((e for e in self._grid._entries if e.stem == sel), None)
+            if entry:
+                self._load_channel_thumbnails(entry)
 
-    def _sec(self, parent, text: str) -> None:
-        tk.Label(parent, text=text, font=("Helvetica", 9, "bold"), anchor="w"
-                 ).pack(fill="x", padx=14, pady=(10, 2))
+    # ── Widget helpers ────────────────────────────────────────────────────────
 
-    def _hsep(self, parent) -> None:
-        tk.Frame(parent, height=1).pack(fill="x", padx=10, pady=5)
+    def _slbl(self, parent, text: str, inline: bool = False) -> None:
+        lbl = tk.Label(parent, text=text, font=("Helvetica", 9, "bold"), anchor="w")
+        if inline:
+            lbl.pack(side="left")
+        else:
+            lbl.pack(fill="x", padx=14, pady=(8, 2))
 
     def _folder_row(self, parent, label: str, var: tk.StringVar, cmd) -> None:
         f = tk.Frame(parent)
@@ -809,22 +925,21 @@ class ProbeFlowGUI:
                  orient="horizontal", length=170, sliderlength=14,
                  relief="flat", bd=0, highlightthickness=0).pack(side="left")
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Theme
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Theme ────────────────────────────────────────────────────────────────
 
     def _apply_theme(self) -> None:
         t = THEMES["dark" if self.dark_mode.get() else "light"]
+        self.root.configure(bg=t["main_bg"])
 
-        for w in (self.root, self._body, self._left, self._tabbar,
-                  self._conv_frame, self._browse_frame):
+        for w in (self._body, self._left, self._tabbar,
+                  self._browse_frame, self._conv_frame):
             try:
                 w.configure(bg=t["main_bg"])
             except Exception:
                 pass
 
-        for w in (self._sidebar, self._conv_sidebar, self._browse_sidebar,
-                  self._adv_frame, self._ch_frame):
+        for w in (self._sidebar, self._browse_sidebar, self._conv_sidebar,
+                  self._adv_frame, self._ch_outer):
             try:
                 w.configure(bg=t["sidebar_bg"])
             except Exception:
@@ -835,24 +950,32 @@ class ProbeFlowGUI:
         self._repaint(self._browse_sidebar, t, "sidebar")
         self._repaint(self._tabbar,         t, "main")
 
-        self.log_text.configure(bg=t["log_bg"], fg=t["log_fg"], insertbackground=t["fg"])
-        for tag, col in (("ok", t["ok_fg"]), ("err", t["err_fg"]),
-                         ("warn", t["warn_fg"]), ("info", t["log_fg"])):
-            self.log_text.tag_config(tag, foreground=col)
+        if hasattr(self, "log_text"):
+            self.log_text.configure(bg=t["log_bg"], fg=t["log_fg"],
+                                    insertbackground=t["fg"])
+            for tag, col in (("ok",   t["ok_fg"]),  ("err",  t["err_fg"]),
+                             ("warn", t["warn_fg"]), ("info", t["log_fg"])):
+                self.log_text.tag_config(tag, foreground=col)
 
-        self._meta_text.configure(bg=t["sidebar_bg"], fg=t["fg"],
-                                  insertbackground=t["fg"])
-
-        self.run_btn.configure(bg=t["accent_bg"], fg=t["accent_fg"],
-                               activebackground=t["accent_bg"],
-                               activeforeground=t["accent_fg"])
+        if hasattr(self, "run_btn"):
+            self.run_btn.configure(bg=t["accent_bg"], fg=t["accent_fg"],
+                                   activebackground=t["accent_bg"],
+                                   activeforeground=t["accent_fg"])
 
         self._statusbar.configure(bg=t["status_bg"])
         self._status_lbl.configure(bg=t["status_bg"], fg=t["status_fg"])
+        self._sel_info_lbl.configure(bg=t["status_bg"], fg=t["status_fg"])
 
-        self._conv_footer.configure(bg=t["sidebar_bg"], fg=t["sub_fg"])
-        self._fcount_lbl.configure(bg=t["sidebar_bg"], fg=t["sub_fg"])
-        self._ch_name_lbl.configure(bg=t["sidebar_bg"], fg=t["fg"])
+        # ttk treeview style
+        style = ttk.Style()
+        style.configure("Meta.Treeview",
+                        background=t["tree_bg"], foreground=t["tree_fg"],
+                        fieldbackground=t["tree_bg"])
+        style.map("Meta.Treeview",
+                  background=[("selected", t["tree_sel"])],
+                  foreground=[("selected", t["tree_fg"])])
+        style.configure("Meta.Treeview.Heading",
+                        background=t["tree_head"], foreground=t["tree_fg"])
 
         self._grid.apply_theme(t)
         self._update_tabs()
@@ -890,9 +1013,7 @@ class ProbeFlowGUI:
             text="Light mode" if self.dark_mode.get() else "Dark mode")
         self._apply_theme()
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Advanced toggle
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Advanced toggle ───────────────────────────────────────────────────────
 
     def _toggle_adv(self) -> None:
         if self._adv_vis:
@@ -905,9 +1026,7 @@ class ProbeFlowGUI:
             self._adv_btn.configure(text="[-] Advanced")
         self._adv_vis = not self._adv_vis
 
-    # ──────────────────────────────────────────────────────────────────────
-    # File count
-    # ──────────────────────────────────────────────────────────────────────
+    # ── File count ────────────────────────────────────────────────────────────
 
     def _update_count(self) -> None:
         d = self.input_dir.get().strip()
@@ -916,15 +1035,13 @@ class ProbeFlowGUI:
             self._fcount_var.set(f"{n} .dat file(s) in input folder")
             self._status.set(f"{n} .dat file(s) found")
         else:
-            self._fcount_var.set("No folder selected")
+            self._fcount_var.set("")
             self._status.set("Ready")
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Folder pickers
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Folder pickers ────────────────────────────────────────────────────────
 
     def _browse_input(self) -> None:
-        d = filedialog.askdirectory(title="Select input folder containing .dat files")
+        d = filedialog.askdirectory(title="Select input folder with .dat files")
         if d:
             self.input_dir.set(d)
 
@@ -933,9 +1050,7 @@ class ProbeFlowGUI:
         if d:
             self.output_dir.set(d)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Log
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Log ───────────────────────────────────────────────────────────────────
 
     def _log(self, msg: str, tag: str = "info") -> None:
         self.log_text.configure(state="normal")
@@ -961,9 +1076,7 @@ class ProbeFlowGUI:
             pass
         self.root.after(80, self._poll_log)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Conversion
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Conversion ────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
         if self._running:
@@ -985,9 +1098,8 @@ class ProbeFlowGUI:
         self._clear_log()
         handler = QueueHandler(self.log_queue)
         handler.setLevel(logging.DEBUG)
-        threading.Thread(
-            target=self._worker, args=(in_dir, out_dir, handler), daemon=True
-        ).start()
+        threading.Thread(target=self._worker, args=(in_dir, out_dir, handler),
+                         daemon=True).start()
 
     def _worker(self, in_dir: str, out_dir: str, handler: QueueHandler) -> None:
         logger = logging.getLogger("nanonis_tools")
@@ -1039,17 +1151,18 @@ class ProbeFlowGUI:
     def _done(self, out_dir: str) -> None:
         self._running = False
         self.run_btn.configure(text="  RUN  ", state="normal")
-        self._status.set("Done")
-        # Auto-load browse view with the output folder
-        groups = scan_output_folder(Path(out_dir))
-        if groups:
-            self._grid.load(groups)
+        sxm_dir = Path(out_dir) / "sxm"
+        entries = scan_sxm_folder(sxm_dir) if sxm_dir.exists() else []
+        if entries:
+            cmap = CMAP_KEY.get(self._cmap_var.get(), "hot")
+            self._grid.load(entries, cmap)
+            self._n_loaded = len(entries)
             self._switch_mode("browse")
-            self._status.set(f"Done -- {len(groups)} scan(s) ready to browse")
+            self._status.set(f"Done -- Selected: 0 / {self._n_loaded}")
+        else:
+            self._status.set("Done")
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Close
-    # ──────────────────────────────────────────────────────────────────────
+    # ── Close ─────────────────────────────────────────────────────────────────
 
     def _on_close(self) -> None:
         save_config({
@@ -1060,6 +1173,7 @@ class ProbeFlowGUI:
             "do_sxm":     self.do_sxm.get(),
             "clip_low":   self.clip_low.get(),
             "clip_high":  self.clip_high.get(),
+            "colormap":   self._cmap_var.get(),
         })
         self.root.destroy()
 
