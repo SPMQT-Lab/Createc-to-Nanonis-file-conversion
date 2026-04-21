@@ -464,7 +464,7 @@ class ConversionWorker(QRunnable):
                 _log("── PNG conversion ──", "info")
                 png_main(src=in_path, out_root=out_path / "png",
                          clip_low=self.clip_low, clip_high=self.clip_high,
-                         verbose=True)
+                         verbose=False)
                 _log("PNG done.", "ok")
 
             if self.do_sxm:
