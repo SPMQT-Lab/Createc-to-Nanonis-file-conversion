@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 dependencies = [
   "numpy",
   "pillow",
+  "PySide6",
+  "matplotlib",
 ]
 
 [project.optional-dependencies]
