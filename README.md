@@ -9,14 +9,16 @@
 
 ## What It Is
 
-**ProbeFlow** is a scanning-tunneling-microscopy (STM) toolkit built around two everyday lab needs:
+**ProbeFlow** is a scanning-tunneling-microscopy (STM) toolkit built around three everyday lab needs:
 
 1. **Getting scans out of Createc and into Nanonis.**
    Createc `.dat` files are decoded, scaled to SI units, and repackaged as Nanonis-compatible `.sxm` files or PNG previews.
 2. **Looking at and cleaning up the scans.**
    Browse a folder of `.sxm` files in a thumbnail grid, switch colormaps, flatten with plane / facet levelling, fix bad scan lines, smooth, FFT-filter, detect grains, measure lattice periodicities, and export publication-ready PNGs with scale bars — **from a GUI *or* from the shell.**
+3. **Reading and processing point-measurement spectroscopy.**
+   Createc `.VERT` files (bias sweeps, time traces, Z spectroscopy) are read into a unit-aware data model, smoothed, differentiated, overlaid, and plotted — with tip positions optionally shown as markers on a topography image.
 
-Everything the GUI can do is also available as a CLI subcommand, so the same corrections can be scripted across hundreds of scans or wired into a processing pipeline.
+Everything is available as a CLI subcommand, so corrections and conversions can be scripted across hundreds of files or wired into a processing pipeline.
 
 ---
 
@@ -134,6 +136,54 @@ Step syntax is `name[:param1,param2,…]`:
 
 Add `--png` to the `pipeline` command to skip `.sxm` output and write a colorised PNG directly.
 
+### Spectroscopy (Createc `.VERT` files)
+
+ProbeFlow reads Createc vertical-spectroscopy files and auto-detects the sweep type from the data:
+
+| Sweep type   | X-axis         | Typical use                                    |
+|--------------|----------------|------------------------------------------------|
+| Bias sweep   | Bias (V)       | I(V) / Z(V) tunnelling spectroscopy            |
+| Time trace   | Time (s)       | I(t) / Z(t) at fixed bias — telegraph noise    |
+
+```bash
+# Print header metadata from a .VERT file
+probeflow spec-info spectrum.VERT
+
+# Quick plot of the Z channel vs. bias or time
+probeflow spec-plot spectrum.VERT --channel Z -o spectrum.png
+
+# Overlay multiple spectra with a waterfall offset; also show the mean
+probeflow spec-overlay *.VERT --channel Z --offset 1e-10 --average -o stack.png
+
+# Mark tip positions of a set of spectra on a topography image
+probeflow spec-positions scan.sxm *.VERT -o positions.png
+```
+
+Available channels per file: `I` (current, A), `Z` (tip-sample distance, m), `V` (bias, V).
+
+**Programmatic API:**
+
+```python
+from probeflow.spec_io import read_spec_file
+from probeflow.spec_processing import smooth_spectrum, numeric_derivative, crop
+from probeflow.spec_plot import plot_spectrum, plot_spectra
+
+spec = read_spec_file("spectrum.VERT")
+print(spec.metadata["sweep_type"])  # "bias_sweep" or "time_trace"
+print(spec.position)                # (x_m, y_m) tip position in metres
+
+# Smooth the Z channel and compute dZ/dV
+z_smooth = smooth_spectrum(spec.channels["Z"], method="savgol", window_length=21)
+dzdv = numeric_derivative(spec.x_array, z_smooth)
+
+# Crop to a sub-range and plot
+x_crop, z_crop = crop(spec.x_array, z_smooth, x_min=-0.3, x_max=-0.05)
+
+# Overlay multiple spectra
+specs = [read_spec_file(p) for p in sorted(Path(".").glob("*.VERT"))]
+ax = plot_spectra(specs, channel="Z", offset=5e-10)
+```
+
 ### GUI
 
 ```bash
@@ -191,6 +241,7 @@ probeflow periodicity scan.sxm --n-peaks 3 --json \
 The package is importable without pulling in the GUI:
 
 ```python
+# Topographic image processing
 from probeflow import processing
 from probeflow.sxm_io import (
     read_sxm_plane, write_sxm_with_planes, read_all_sxm_planes,
@@ -200,6 +251,14 @@ from probeflow.sxm_io import (
 arr = read_sxm_plane("scan.sxm", plane_idx=0)
 arr = processing.align_rows(arr, method="median")
 arr = processing.subtract_background(arr, order=1)
+
+# Spectroscopy
+from probeflow.spec_io import read_spec_file
+from probeflow.spec_processing import smooth_spectrum, numeric_derivative
+
+spec = read_spec_file("spectrum.VERT")
+z_smooth = smooth_spectrum(spec.channels["Z"], method="savgol")
+dzdv = numeric_derivative(spec.x_array, z_smooth)
 ```
 
 ---
@@ -214,12 +273,16 @@ probeflow/              # installable package
 ├── dat_png.py          # Createc .dat → PNG previews
 ├── sxm_io.py           # .sxm read / write (GUI-free)
 ├── processing.py       # image-processing pipeline (GUI-free)
+├── spec_io.py          # Createc .VERT reader → SpecData (GUI-free)
+├── spec_processing.py  # spectroscopy processing functions (GUI-free)
+├── spec_plot.py        # spectroscopy matplotlib plots (GUI-free)
 ├── gui.py              # PySide6 desktop interface
 └── cli.py              # unified "probeflow" command
 
 src/file_cushions/      # binary layout captured from a reference .sxm file
 data/                   # sample input / output for manual runs + tests
-tests/                  # pytest suite (conversion, processing, .sxm round-trip)
+tests/                  # pytest suite (conversion, processing, .sxm round-trip,
+                        #               spectroscopy reader + processing)
 assets/                 # logo artwork
 ```
 
@@ -239,6 +302,8 @@ Covers:
 * Conversion (`.dat` → `.sxm` and `.dat` → PNG) against the bundled sample scans.
 * All ten functions in `probeflow.processing`.
 * `.sxm` header parsing, plane reading, and write-then-read round-trip.
+* `.VERT` header parsing, unit conversion, sweep-type detection, and error handling.
+* All six functions in `probeflow.spec_processing`.
 
 ---
 
