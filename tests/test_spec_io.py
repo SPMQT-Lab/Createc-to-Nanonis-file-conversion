@@ -56,6 +56,11 @@ class TestParseSpecHeader:
         assert "SpecFreq" in hdr
         assert float(hdr["SpecFreq"]) > 0
 
+    def test_does_not_require_full_file_read(self):
+        # parse_spec_header should succeed even on a file that is mostly data.
+        hdr = parse_spec_header(VERT_BIAS_SWEEP)
+        assert "DAC-Type" in hdr
+
 
 # ─── read_spec_file — time trace ─────────────────────────────────────────────
 
@@ -94,7 +99,6 @@ class TestReadSpecFileTimeTrace:
 
     def test_z_channel_units_metres(self, time_trace_spec):
         z = time_trace_spec.channels["Z"]
-        # Z should be in metres; 77 K STM is typically < 1 nm range
         assert z.min() > -20e-10  # >-20 Å
         assert z.max() < 20e-10   # <+20 Å
 
@@ -104,10 +108,8 @@ class TestReadSpecFileTimeTrace:
         assert isinstance(py, float)
 
     def test_position_in_metres(self, time_trace_spec):
-        # OffsetX=3823 DAC, Dacto[A]xy=0.00083 → ~3.17e-10 m
-        # OffsetY=-91743 DAC → ~-7.61e-9 m
         px, py = time_trace_spec.position
-        assert abs(px) < 1e-6  # within 1 µm of centre
+        assert abs(px) < 1e-6
         assert abs(py) < 1e-6
 
     def test_y_units_dict(self, time_trace_spec):
@@ -115,9 +117,8 @@ class TestReadSpecFileTimeTrace:
         assert time_trace_spec.y_units["Z"] == "m"
 
     def test_bias_constant(self, time_trace_spec):
-        # For time trace, voltage should be constant
         v = time_trace_spec.channels["V"]
-        assert v.max() - v.min() < 1e-3  # less than 1 mV variation
+        assert v.max() - v.min() < 1e-3  # < 1 mV variation
 
 
 # ─── read_spec_file — bias sweep ─────────────────────────────────────────────
@@ -137,7 +138,6 @@ class TestReadSpecFileBiasSweep:
         assert bias_sweep_spec.x_array.shape == (5000,)
 
     def test_x_range_volts(self, bias_sweep_spec):
-        # sweep from -50 mV to -300 mV
         x = bias_sweep_spec.x_array
         assert x.min() == pytest.approx(-0.300, abs=0.01)
         assert x.max() == pytest.approx(-0.050, abs=0.01)
@@ -148,8 +148,7 @@ class TestReadSpecFileBiasSweep:
 
     def test_z_varies(self, bias_sweep_spec):
         z = bias_sweep_spec.channels["Z"]
-        z_range = float(z.max() - z.min())
-        assert z_range > 0
+        assert float(z.max() - z.min()) > 0
 
 
 # ─── error handling ──────────────────────────────────────────────────────────
@@ -164,3 +163,40 @@ class TestReadSpecFileErrors:
         bad.write_bytes(b"key=val\r\nother=stuff\r\n")
         with pytest.raises(ValueError, match="DATA"):
             read_spec_file(bad)
+
+    def test_too_few_columns(self, tmp_path):
+        # 3 columns instead of required 4
+        body = "DATA\r\n    3    0    0    1\r\n"
+        body += "0\t-50.0\t0.0\r\n" * 3
+        bad = tmp_path / "short.VERT"
+        bad.write_bytes(body.encode())
+        with pytest.raises(ValueError, match="4"):
+            read_spec_file(bad)
+
+    def test_threshold_kwarg_classifies_short_sweep(self, tmp_path):
+        # A 0.5 mV sweep should be classified as a sweep if threshold is 0.1 mV.
+        # Build a minimal header with Vpoint entries spanning 0.5 mV.
+        hdr = (
+            "[ParVERT30]\r\n"
+            "DAC-Type=20bit\r\n"
+            "GainPre 10^=9\r\n"
+            "Dacto[A]xy=0.00083\r\n"
+            "Dacto[A]z=0.00018\r\n"
+            "OffsetX=0\r\nOffsetY=0\r\n"
+            "SpecFreq=1000\r\n"
+            "Vpoint0.t=0\r\nVpoint0.V=-50.0\r\n"
+            "Vpoint1.t=100\r\nVpoint1.V=-50.5\r\n"  # 0.5 mV span
+            "Vpoint2.t=0\r\nVpoint2.V=0\r\n"
+        )
+        body = hdr + "DATA\r\n    10    0    0    1\r\n"
+        for i in range(10):
+            v = -50.0 - i * 0.05
+            body += f"{i}\t{v}\t0.0\t-5000.0\r\n"
+        f = tmp_path / "short_sweep.VERT"
+        f.write_bytes(body.encode())
+        # Default threshold (1 mV) would classify this as time trace
+        spec_default = read_spec_file(f)
+        assert spec_default.metadata["sweep_type"] == "time_trace"
+        # With tighter threshold (0.1 mV) it's a sweep
+        spec_tight = read_spec_file(f, time_trace_threshold_mv=0.1)
+        assert spec_tight.metadata["sweep_type"] == "bias_sweep"

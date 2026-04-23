@@ -6,6 +6,7 @@ in the GUI or used standalone in scripts and notebooks.
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,8 @@ import numpy as np
 from .spec_io import SpecData
 from .spec_processing import current_histogram as _hist
 
+log = logging.getLogger(__name__)
+
 
 def plot_spectrum(
     spec: SpecData,
@@ -23,7 +26,7 @@ def plot_spectrum(
     label: Optional[str] = None,
     **plot_kwargs,
 ):
-    """Plot a single spectrum with labelled axes.
+    """Plot a single spectrum with labelled axes and a legend.
 
     Parameters
     ----------
@@ -47,12 +50,19 @@ def plot_spectrum(
     if ax is None:
         _, ax = plt.subplots()
 
+    # Pop 'label' from kwargs to avoid passing it twice.
+    kw_label = plot_kwargs.pop("label", None)
+    lbl = label if label is not None else (
+        kw_label if kw_label is not None else
+        Path(spec.metadata.get("filename", "")).stem
+    )
+
     y = spec.channels[channel]
     unit = spec.y_units.get(channel, "")
-    lbl = label if label is not None else Path(spec.metadata.get("filename", "")).stem
     ax.plot(spec.x_array, y, label=lbl, **plot_kwargs)
     ax.set_xlabel(spec.x_label)
     ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
+    ax.legend()
     return ax
 
 
@@ -77,7 +87,8 @@ def plot_spectra(
     ax : matplotlib.axes.Axes, optional
         Axes to draw into; created if None.
     **plot_kwargs
-        Forwarded to each ``ax.plot`` call.
+        Forwarded to each ``ax.plot`` call. A 'label' key is applied to all
+        curves; omit it to use per-file names.
 
     Returns
     -------
@@ -88,15 +99,21 @@ def plot_spectra(
     if ax is None:
         _, ax = plt.subplots()
 
+    # A caller-supplied label overrides per-spec names for all curves.
+    user_label = plot_kwargs.pop("label", None)
+
     for i, spec in enumerate(specs):
         y = spec.channels[channel] + i * offset
-        lbl = Path(spec.metadata.get("filename", f"#{i}")).stem
+        lbl = user_label if user_label is not None else (
+            Path(spec.metadata.get("filename", f"#{i}")).stem
+        )
         ax.plot(spec.x_array, y, label=lbl, **plot_kwargs)
 
     if specs:
         unit = specs[0].y_units.get(channel, "")
         ax.set_xlabel(specs[0].x_label)
         ax.set_ylabel(f"{channel} ({unit})" if unit else channel)
+        ax.legend()
 
     return ax
 
@@ -108,8 +125,9 @@ def plot_spec_positions(
 ):
     """Display an .sxm topography with spectroscopy tip positions marked.
 
-    Each spectrum's (x, y) tip position is drawn as a numbered marker
-    on the topography image.
+    Each spectrum's (x, y) tip position is drawn as a numbered marker on the
+    topography. Scan-frame rotation (SCAN_ANGLE) is applied so markers land
+    correctly on rotated images.
 
     Parameters
     ----------
@@ -125,7 +143,7 @@ def plot_spec_positions(
     matplotlib.axes.Axes
     """
     import matplotlib.pyplot as plt
-    from .sxm_io import parse_sxm_header, read_sxm_plane, sxm_scan_range, sxm_dims
+    from .sxm_io import parse_sxm_header, read_sxm_plane, sxm_scan_range
 
     if ax is None:
         _, ax = plt.subplots()
@@ -136,6 +154,7 @@ def plot_spec_positions(
 
     vmin = float(np.nanpercentile(arr, 1))
     vmax = float(np.nanpercentile(arr, 99))
+    # origin="upper": row 0 at top; extent maps y=h_nm to top, y=0 to bottom.
     ax.imshow(
         arr,
         origin="upper",
@@ -147,14 +166,26 @@ def plot_spec_positions(
     ax.set_xlabel("X (nm)")
     ax.set_ylabel("Y (nm)")
 
-    # Parse scan centre offset from the header (metres).
     ox_m, oy_m = _parse_sxm_offset(hdr)
+    theta = _parse_sxm_angle_rad(hdr)
+    if theta != 0.0:
+        log.warning(
+            "plot_spec_positions: scan angle %.3f rad applied — "
+            "verify markers if the image appears rotated.",
+            theta,
+        )
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
 
     for i, spec in enumerate(specs):
         px, py = spec.position
-        # Position relative to image lower-left corner.
-        rel_x = (px - ox_m + w_m / 2.0) * 1e9
-        rel_y = (h_m / 2.0 - (py - oy_m)) * 1e9
+        dx, dy = px - ox_m, py - oy_m
+        # Rotate physical offset into the scan frame.
+        dx_rot = cos_t * dx + sin_t * dy
+        dy_rot = -sin_t * dx + cos_t * dy
+        # With origin="upper" and extent [0,W,0,H]: x=0 is left, x=W is right,
+        # y=H is the top of the axes (where image row 0 sits), y=0 is the bottom.
+        rel_x = (dx_rot + w_m / 2.0) * 1e9
+        rel_y = (dy_rot + h_m / 2.0) * 1e9
         ax.plot(rel_x, rel_y, "o", markersize=7, color="yellow",
                 markeredgecolor="black", markeredgewidth=0.5)
         ax.annotate(
@@ -200,7 +231,7 @@ def plot_current_histogram(
     if ax is None:
         _, ax = plt.subplots()
 
-    bin_edges, counts = _hist(spec.channels[channel], bins=bins)
+    counts, bin_edges = _hist(spec.channels[channel], bins=bins)
     centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
     widths = np.diff(bin_edges)
     ax.bar(centers, counts, width=widths, **plot_kwargs)
@@ -212,10 +243,24 @@ def plot_current_histogram(
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+# Matches floats with or without a leading digit: 1.5E-3, .5e+2, -14.0, etc.
+_FLOAT_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
 def _parse_sxm_offset(hdr: dict) -> tuple[float, float]:
     """Extract the scan centre offset from an .sxm header dict (metres)."""
     raw = hdr.get("SCAN_OFFSET", "")
-    nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", raw)
+    nums = _FLOAT_RE.findall(raw)
     if len(nums) >= 2:
         return float(nums[0]), float(nums[1])
     return 0.0, 0.0
+
+
+def _parse_sxm_angle_rad(hdr: dict) -> float:
+    """Extract the scan rotation angle from an .sxm header dict (radians)."""
+    raw = hdr.get("SCAN_ANGLE", "0").strip()
+    nums = _FLOAT_RE.findall(raw)
+    try:
+        return float(nums[0]) if nums else 0.0
+    except (ValueError, IndexError):
+        return 0.0

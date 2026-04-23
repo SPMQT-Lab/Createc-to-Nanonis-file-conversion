@@ -63,6 +63,12 @@ class TestSmoothSpectrum:
         with pytest.raises(ValueError, match="Unknown"):
             smooth_spectrum(np.ones(50), method="fft")
 
+    def test_short_array_savgol_returns_copy(self):
+        # Arrays shorter than polyorder+2 should be returned unchanged (no crash).
+        y = np.array([1.0, 2.0, 3.0])
+        result = smooth_spectrum(y, method="savgol", polyorder=3)
+        assert np.allclose(result, y)
+
 
 # ─── numeric_derivative ──────────────────────────────────────────────────────
 
@@ -91,6 +97,12 @@ class TestNumericDerivative:
         x, y = sine_signal
         dy = numeric_derivative(x, y)
         assert len(dy) == len(x)
+
+    def test_duplicate_x_raises(self):
+        x = np.array([0.0, 1.0, 1.0, 2.0])
+        y = np.array([0.0, 1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="duplicate"):
+            numeric_derivative(x, y)
 
 
 # ─── normalize ───────────────────────────────────────────────────────────────
@@ -148,6 +160,14 @@ class TestCrop:
         assert len(xc) == 0
         assert len(yc) == 0
 
+    def test_swapped_bounds_same_result(self):
+        x = np.linspace(0, 1, 100)
+        y = x ** 2
+        xc1, yc1 = crop(x, y, 0.2, 0.8)
+        xc2, yc2 = crop(x, y, 0.8, 0.2)
+        assert np.array_equal(xc1, xc2)
+        assert np.array_equal(yc1, yc2)
+
 
 # ─── average_spectra ─────────────────────────────────────────────────────────
 
@@ -172,30 +192,36 @@ class TestAverageSpectra:
         avg = average_spectra(spectra)
         assert avg.shape == (200,)
 
+    def test_length_mismatch_raises(self):
+        a = np.ones(100)
+        b = np.ones(150)
+        with pytest.raises(ValueError, match="same length"):
+            average_spectra([a, b])
+
 
 # ─── current_histogram ───────────────────────────────────────────────────────
 
 class TestCurrentHistogram:
     def test_return_shapes(self):
         data = np.linspace(-1e-9, 1e-9, 500)
-        edges, counts = current_histogram(data, bins=50)
-        assert len(edges) == 51
+        counts, edges = current_histogram(data, bins=50)
         assert len(counts) == 50
+        assert len(edges) == 51
 
     def test_total_counts(self):
         data = np.ones(300) * 1e-10
-        edges, counts = current_histogram(data, bins=20)
+        counts, edges = current_histogram(data, bins=20)
         assert counts.sum() == 300
 
     def test_nan_ignored(self):
         data = np.array([1.0, 2.0, np.nan, 3.0, np.nan])
-        edges, counts = current_histogram(data, bins=10)
+        counts, edges = current_histogram(data, bins=10)
         assert counts.sum() == 3
 
     def test_bimodal_two_peaks(self):
         # Two groups of values well separated
         data = np.concatenate([np.full(100, 1e-10), np.full(100, 5e-10)])
-        edges, counts = current_histogram(data, bins=100)
+        counts, edges = current_histogram(data, bins=100)
         # The two groups should be in different halves of the histogram
         mid = len(counts) // 2
         assert counts[:mid].sum() > 0

@@ -37,11 +37,19 @@ def smooth_spectrum(
     if method == "savgol":
         window = int(kwargs.get("window_length", 11))
         polyorder = int(kwargs.get("polyorder", 3))
-        # window must be odd and > polyorder
+        n = len(data)
+        # Return unchanged if the array is too short to filter meaningfully.
+        if n < polyorder + 2:
+            return data.copy()
+        # window must be odd and strictly greater than polyorder.
         window = max(polyorder + 2 if polyorder % 2 == 0 else polyorder + 1, window)
         if window % 2 == 0:
             window += 1
-        window = min(window, len(data) if len(data) % 2 == 1 else len(data) - 1)
+        max_win = n if n % 2 == 1 else n - 1
+        window = min(window, max_win)
+        # Clamp to minimum valid window after the size cap.
+        if window < polyorder + 1:
+            window = polyorder + 1 if (polyorder + 1) % 2 == 1 else polyorder + 2
         return savgol_filter(data, window_length=window, polyorder=polyorder)
     elif method == "gaussian":
         from scipy.ndimage import gaussian_filter1d
@@ -53,16 +61,22 @@ def smooth_spectrum(
         kernel = np.ones(n) / n
         return np.convolve(data, kernel, mode="same")
     else:
-        raise ValueError(f"Unknown smoothing method: {method!r}. Choose savgol, gaussian, or boxcar.")
+        raise ValueError(
+            f"Unknown smoothing method: {method!r}. Choose savgol, gaussian, or boxcar."
+        )
 
 
 def numeric_derivative(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Compute dy/dx via central finite differences.
 
+    x must be strictly monotonic (no duplicate values). Non-monotonic inputs
+    — such as a forward+backward bias sweep stored in a single array — will
+    produce incorrect derivatives; split the sweep first.
+
     Parameters
     ----------
     x : np.ndarray
-        Independent variable (e.g. bias in V or time in s).
+        Independent variable (e.g. bias in V or time in s). Must be monotonic.
     y : np.ndarray
         Dependent variable (e.g. current in A).
 
@@ -73,6 +87,11 @@ def numeric_derivative(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
+    if np.any(np.diff(x) == 0.0):
+        raise ValueError(
+            "numeric_derivative: x contains duplicate values. "
+            "If this is a forward+backward sweep, split it before differentiating."
+        )
     return np.gradient(y, x)
 
 
@@ -105,7 +124,9 @@ def normalize(data: np.ndarray, method: str = "max") -> np.ndarray:
         sigma = float(np.nanstd(data))
         return (data - mu) / sigma if sigma != 0.0 else np.zeros_like(data)
     else:
-        raise ValueError(f"Unknown normalization method: {method!r}. Choose max, minmax, or zscore.")
+        raise ValueError(
+            f"Unknown normalization method: {method!r}. Choose max, minmax, or zscore."
+        )
 
 
 def crop(
@@ -115,6 +136,8 @@ def crop(
     x_max: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return the subset of (x, y) where x_min ≤ x ≤ x_max.
+
+    If x_min > x_max the bounds are silently swapped.
 
     Parameters
     ----------
@@ -130,6 +153,8 @@ def crop(
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
+    if x_min > x_max:
+        x_min, x_max = x_max, x_min
     mask = (x >= x_min) & (x <= x_max)
     return x[mask], y[mask]
 
@@ -140,7 +165,8 @@ def average_spectra(spectra: list[np.ndarray]) -> np.ndarray:
     Parameters
     ----------
     spectra : list[np.ndarray]
-        List of 1-D arrays, all the same length.
+        List of 1-D arrays, all the same length. Raises ValueError if lengths
+        differ — interpolate to a common x grid before calling if needed.
 
     Returns
     -------
@@ -149,8 +175,14 @@ def average_spectra(spectra: list[np.ndarray]) -> np.ndarray:
     """
     if not spectra:
         raise ValueError("spectra list is empty")
-    stacked = np.stack([np.asarray(s, dtype=np.float64) for s in spectra], axis=0)
-    return np.mean(stacked, axis=0)
+    arrs = [np.asarray(s, dtype=np.float64) for s in spectra]
+    lengths = [a.size for a in arrs]
+    if len(set(lengths)) > 1:
+        raise ValueError(
+            f"average_spectra: all spectra must have the same length, "
+            f"got {lengths}. Interpolate to a common x grid first."
+        )
+    return np.mean(np.stack(arrs, axis=0), axis=0)
 
 
 def current_histogram(
@@ -158,6 +190,8 @@ def current_histogram(
     bins: int = 100,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Histogram of current values for telegraph-noise analysis.
+
+    Return order matches numpy: (counts, bin_edges).
 
     Parameters
     ----------
@@ -169,9 +203,8 @@ def current_histogram(
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
-        (bin_edges, counts) — bin_edges has length bins+1, counts has length bins.
+        (counts, bin_edges) — counts has length bins, bin_edges has length bins+1.
     """
     data = np.asarray(data, dtype=np.float64)
     finite = data[np.isfinite(data)]
-    counts, bin_edges = np.histogram(finite, bins=bins)
-    return bin_edges, counts
+    return np.histogram(finite, bins=bins)
