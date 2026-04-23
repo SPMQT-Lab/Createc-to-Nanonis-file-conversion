@@ -69,6 +69,12 @@ class TestSmoothSpectrum:
         result = smooth_spectrum(y, method="savgol", polyorder=3)
         assert np.allclose(result, y)
 
+    def test_boxcar_interior_accuracy(self):
+        # A flat interior should be reproduced exactly by any averaging filter.
+        y = np.ones(100)
+        smoothed = smooth_spectrum(y, method="boxcar", n=7)
+        assert np.allclose(smoothed, 1.0, atol=1e-12)
+
 
 # ─── numeric_derivative ──────────────────────────────────────────────────────
 
@@ -101,8 +107,22 @@ class TestNumericDerivative:
     def test_duplicate_x_raises(self):
         x = np.array([0.0, 1.0, 1.0, 2.0])
         y = np.array([0.0, 1.0, 2.0, 3.0])
-        with pytest.raises(ValueError, match="duplicate"):
+        with pytest.raises(ValueError, match="monotonic"):
             numeric_derivative(x, y)
+
+    def test_non_monotonic_x_raises(self):
+        # forward+backward sweep: 0,1,2,1,0
+        x = np.array([0.0, 1.0, 2.0, 1.0, 0.0])
+        y = np.array([0.0, 1.0, 4.0, 1.0, 0.0])
+        with pytest.raises(ValueError, match="monotonic"):
+            numeric_derivative(x, y)
+
+    def test_descending_x_accepted(self):
+        # Strictly decreasing x (e.g. reverse sweep) should work fine.
+        x = np.linspace(5.0, 0.0, 100)
+        y = 3.0 * x + 1.0
+        dy = numeric_derivative(x, y)
+        assert np.allclose(dy, 3.0, atol=1e-8)
 
 
 # ─── normalize ───────────────────────────────────────────────────────────────

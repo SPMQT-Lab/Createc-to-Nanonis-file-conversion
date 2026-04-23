@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -57,6 +58,12 @@ def plot_spectrum(
         Path(spec.metadata.get("filename", "")).stem
     )
 
+    if channel == "V" and spec.metadata.get("sweep_type") == "bias_sweep":
+        warnings.warn(
+            "plot_spectrum: 'V' channel is redundant for bias sweeps — "
+            "it equals x_array. Consider plotting 'I' or 'Z' instead.",
+            stacklevel=2,
+        )
     y = spec.channels[channel]
     unit = spec.y_units.get(channel, "")
     ax.plot(spec.x_array, y, label=lbl, **plot_kwargs)
@@ -82,8 +89,8 @@ def plot_spectra(
     channel : str
         Channel name to plot.
     offset : float
-        Vertical shift applied to each successive spectrum (in channel units).
-        Set to 0 for a plain overlay.
+        Vertical shift applied to each successive spectrum, in the channel's
+        SI units (e.g. A for current, m for Z). Set to 0 for a plain overlay.
     ax : matplotlib.axes.Axes, optional
         Axes to draw into; created if None.
     **plot_kwargs
@@ -155,6 +162,8 @@ def plot_spec_positions(
     vmin = float(np.nanpercentile(arr, 1))
     vmax = float(np.nanpercentile(arr, 99))
     # origin="upper": row 0 at top; extent maps y=h_nm to top, y=0 to bottom.
+    # Nanonis .sxm files scan from top to bottom, so row 0 is the physically
+    # highest y position — consistent with origin="upper" here.
     ax.imshow(
         arr,
         origin="upper",
@@ -214,7 +223,8 @@ def plot_current_histogram(
     spec : SpecData
         Parsed spectroscopy file.
     channel : str
-        Channel whose values are histogrammed (typically 'I').
+        Channel whose values are histogrammed. Defaults to 'I' for
+        telegraph-noise analysis, but any channel name is accepted.
     bins : int
         Number of histogram bins.
     ax : matplotlib.axes.Axes, optional

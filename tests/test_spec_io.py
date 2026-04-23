@@ -236,9 +236,9 @@ class TestUnitConversionTT50mV:
         assert v.max() - v.min() < 1e-6
 
     def test_z_channel_zero(self, tt_50mv_spec):
-        # Feedback off during time trace — Z should be essentially zero.
+        # Feedback off during time trace — Z column is all DAC zeros, so z_m == 0.
         z = tt_50mv_spec.channels["Z"]
-        assert np.all(z == pytest.approx(0.0, abs=1e-15))
+        assert np.all(z == 0.0)
 
     def test_current_magnitude(self, tt_50mv_spec):
         # Expected ~-80 pA; allow 5% tolerance.
@@ -262,7 +262,7 @@ class TestUnitConversionTT450mV:
 
     def test_z_channel_zero(self, tt_450mv_spec):
         z = tt_450mv_spec.channels["Z"]
-        assert np.all(z == pytest.approx(0.0, abs=1e-15))
+        assert np.all(z == 0.0)
 
     def test_current_mean(self, tt_450mv_spec):
         # Expected ~-340 pA mean; allow 5% tolerance.
@@ -277,3 +277,120 @@ class TestUnitConversionTT450mV:
 
     def test_current_negative(self, tt_450mv_spec):
         assert np.all(tt_450mv_spec.channels["I"] < 0)
+
+
+# ─── Synthetic DAC-scale and sign validation ─────────────────────────────────
+
+def _make_synthetic_vert(tmp_path, z_dac: float, i_dac: float, bias_mv: float = -50.0):
+    """Build a minimal 5-row .VERT file with known raw DAC column values."""
+    n_rows = 5
+    hdr = (
+        "[ParVERT30]\r\n"
+        "DAC-Type=20bit\r\n"
+        "GainPre 10^=9\r\n"
+        "Dacto[A]xy=0.00083\r\n"
+        "Dacto[A]z=0.00018\r\n"
+        "OffsetX=0\r\nOffsetY=0\r\n"
+        "SpecFreq=1000\r\n"
+        f"Vpoint0.t=0\r\nVpoint0.V={bias_mv}\r\n"
+        f"Vpoint1.t={n_rows}\r\nVpoint1.V={bias_mv}\r\n"
+        "Vpoint2.t=0\r\nVpoint2.V=0\r\n"
+    )
+    body = hdr + f"DATA\r\n    {n_rows}    0    0    1\r\n"
+    for i in range(n_rows):
+        body += f"{i}\t{bias_mv}\t{z_dac}\t{i_dac}\r\n"
+    f = tmp_path / "synthetic.VERT"
+    f.write_bytes(body.encode())
+    return f
+
+
+class TestSyntheticDACConversion:
+    """Verify 2× DAC scale and sign convention with known raw values (#2/#22)."""
+
+    def test_z_dac_to_metres(self, tmp_path):
+        # Dacto[A]z=0.00018 Å/DAC → 1.8e-14 m/DAC; z_dac=100 → z_m=1.8e-12 m
+        f = _make_synthetic_vert(tmp_path, z_dac=100.0, i_dac=0.0)
+        spec = read_spec_file(f)
+        expected_z = 100.0 * 0.00018 * 1e-10  # 1.8e-12 m
+        assert spec.channels["Z"].mean() == pytest.approx(expected_z, rel=1e-6)
+
+    def test_i_dac_sign_and_scale(self, tmp_path):
+        # 20-bit DAC: vpd = (10/2^20)*2 = 20/2^20 V/DAC; gain=10^9 V/A
+        # is_ = vpd/gain = 20/(2^20 * 1e9) ≈ 1.9073e-14 A/DAC
+        # i_dac=-5000 → current ≈ -9.537e-11 A (negative)
+        import math
+        f = _make_synthetic_vert(tmp_path, z_dac=0.0, i_dac=-5000.0)
+        spec = read_spec_file(f)
+        vpd = (10.0 / 2**20) * 2
+        expected_i = -5000.0 * vpd / 1e9
+        assert spec.channels["I"].mean() == pytest.approx(expected_i, rel=1e-6)
+        assert spec.channels["I"].mean() < 0
+
+    def test_positive_i_dac_gives_positive_current(self, tmp_path):
+        f = _make_synthetic_vert(tmp_path, z_dac=0.0, i_dac=3000.0)
+        spec = read_spec_file(f)
+        assert spec.channels["I"].mean() > 0
+
+
+# ─── parse_spec_header edge cases ────────────────────────────────────────────
+
+class TestParseSpecHeaderEdgeCases:
+    def test_single_row_parse(self, tmp_path):
+        f = tmp_path / "tiny.VERT"
+        f.write_bytes(b"key=val\r\nDATA\r\n")
+        hdr = parse_spec_header(f)
+        assert hdr["key"] == "val"
+
+    def test_truncated_file_raises(self, tmp_path):
+        f = tmp_path / "trunc.VERT"
+        f.write_bytes(b"key=val\r\nno_data_marker_here")
+        with pytest.raises(ValueError, match="DATA"):
+            parse_spec_header(f)
+
+    def test_latin1_non_ascii_round_trip(self, tmp_path):
+        # Å (0xC5) appears in Createc headers as the unit for angstrom.
+        f = tmp_path / "latin1.VERT"
+        f.write_bytes("Dacto[\xc5]xy=0.00083\r\nDATA\r\n".encode("latin-1"))
+        hdr = parse_spec_header(f)
+        assert "Dacto[\xc5]xy" in hdr or "Dacto[Å]xy" in hdr
+
+
+# ─── z_scale_m_per_dac fallback path ─────────────────────────────────────────
+
+class TestZScaleFallback:
+    """z_scale_m_per_dac falls back to GainZ * ZPiezoconst when Dacto[A]z is absent."""
+
+    def test_z_scale_fallback_no_dacto_z(self, tmp_path):
+        hdr_text = (
+            "[ParVERT30]\r\n"
+            "DAC-Type=20bit\r\n"
+            "GainPre 10^=9\r\n"
+            "Dacto[A]xy=0.00083\r\n"
+            # No Dacto[A]z — triggers fallback to GainZ * ZPiezoconst
+            "GainZ=10\r\n"
+            "ZPiezoconst=19.2\r\n"
+            "OffsetX=0\r\nOffsetY=0\r\n"
+            "SpecFreq=1000\r\n"
+            "Vpoint0.t=0\r\nVpoint0.V=-50\r\n"
+            "Vpoint1.t=5\r\nVpoint1.V=-50\r\n"
+            "Vpoint2.t=0\r\nVpoint2.V=0\r\n"
+            "DATA\r\n    5    0    0    1\r\n"
+        )
+        rows = "".join(f"{i}\t-50.0\t0.0\t0.0\r\n" for i in range(5))
+        f = tmp_path / "noz.VERT"
+        f.write_bytes((hdr_text + rows).encode())
+        spec = read_spec_file(f)
+        # Z column is all zero so z_m must be zero regardless of scale.
+        assert np.all(spec.channels["Z"] == 0.0)
+        # Metadata should parse without error.
+        assert spec.metadata["n_points"] == 5
+
+
+# ─── bias_sweep absolute current magnitude ───────────────────────────────────
+
+class TestBiasSweepCurrentMagnitude:
+    def test_i_magnitude_reasonable(self, bias_sweep_spec):
+        # I(V) on a metal surface at -300 mV: order-of-magnitude ~10 pA–10 nA.
+        i = bias_sweep_spec.channels["I"]
+        assert float(np.abs(i).max()) > 1e-12
+        assert float(np.abs(i).max()) < 1e-6

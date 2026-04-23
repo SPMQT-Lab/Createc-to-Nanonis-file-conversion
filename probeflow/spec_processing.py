@@ -6,6 +6,8 @@ No GUI or file-I/O dependency; safe to call from worker threads.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from scipy.signal import savgol_filter
 
@@ -56,10 +58,11 @@ def smooth_spectrum(
         sigma = float(kwargs.get("sigma", 2.0))
         return gaussian_filter1d(data, sigma=sigma)
     elif method == "boxcar":
+        from scipy.ndimage import uniform_filter1d
         n = int(kwargs.get("n", 5))
         n = max(1, n)
-        kernel = np.ones(n) / n
-        return np.convolve(data, kernel, mode="same")
+        # mode="nearest" reflects edge values instead of zero-padding.
+        return uniform_filter1d(data, size=n, mode="nearest")
     else:
         raise ValueError(
             f"Unknown smoothing method: {method!r}. Choose savgol, gaussian, or boxcar."
@@ -87,9 +90,10 @@ def numeric_derivative(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
-    if np.any(np.diff(x) == 0.0):
+    diffs = np.diff(x)
+    if not (np.all(diffs > 0) or np.all(diffs < 0)):
         raise ValueError(
-            "numeric_derivative: x contains duplicate values. "
+            "numeric_derivative: x is not strictly monotonic. "
             "If this is a forward+backward sweep, split it before differentiating."
         )
     return np.gradient(y, x)
@@ -115,7 +119,10 @@ def normalize(data: np.ndarray, method: str = "max") -> np.ndarray:
     data = np.asarray(data, dtype=np.float64)
     if method == "max":
         m = float(np.nanmax(np.abs(data)))
-        return data / m if m != 0.0 else data.copy()
+        if m == 0.0:
+            warnings.warn("normalize: all-zero input; returning zeros unchanged", stacklevel=2)
+            return data.copy()
+        return data / m
     elif method == "minmax":
         lo, hi = float(np.nanmin(data)), float(np.nanmax(data))
         return (data - lo) / (hi - lo) if hi != lo else np.zeros_like(data)
@@ -165,8 +172,10 @@ def average_spectra(spectra: list[np.ndarray]) -> np.ndarray:
     Parameters
     ----------
     spectra : list[np.ndarray]
-        List of 1-D arrays, all the same length. Raises ValueError if lengths
-        differ — interpolate to a common x grid before calling if needed.
+        List of 1-D arrays, all the same length. All spectra must share the
+        same x-axis grid (i.e. identical x values at every index), not merely
+        the same number of points. Raises ValueError if lengths differ —
+        interpolate to a common x grid before calling if needed.
 
     Returns
     -------

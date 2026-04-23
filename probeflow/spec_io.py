@@ -10,7 +10,7 @@ from typing import Any, Union
 
 import numpy as np
 
-from .common import _f, _i, find_hdr, get_dac_bits, i_scale_a_per_dac, v_per_dac, z_scale_m_per_dac
+from .common import _f, find_hdr, get_dac_bits, i_scale_a_per_dac, v_per_dac, z_scale_m_per_dac
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,12 @@ class SpecData:
     position: tuple[float, float]
     metadata: dict[str, Any]
 
+    def __repr__(self) -> str:
+        n = self.metadata.get("n_points", "?")
+        sw = self.metadata.get("sweep_type", "unknown")
+        fname = self.metadata.get("filename", "")
+        return f"SpecData({fname!r}, {sw}, {n} pts)"
+
 
 def parse_spec_header(path: Union[str, Path]) -> dict[str, str]:
     """Read only the header of a .VERT file and return it as a dictionary.
@@ -73,16 +79,24 @@ def parse_spec_header(path: Union[str, Path]) -> dict[str, str]:
     """
     path = Path(path)
     chunks: list[bytes] = []
+    # Keep last 3 bytes of previous chunk so DATA is found even when split across
+    # a chunk boundary (len("DATA") - 1 = 3).
+    tail = b""
     with path.open("rb") as fh:
         while True:
             chunk = fh.read(65536)
             if not chunk:
                 break
-            chunks.append(chunk)
-            blob = b"".join(chunks)
-            pos = blob.find(b"DATA")
+            search = tail + chunk
+            pos = search.find(b"DATA")
             if pos >= 0:
-                return _parse_vert_header(blob[:pos])
+                prev_len = sum(len(c) for c in chunks)
+                chunks.append(chunk)
+                blob = b"".join(chunks)
+                abs_pos = prev_len - len(tail) + pos
+                return _parse_vert_header(blob[:abs_pos])
+            chunks.append(chunk)
+            tail = chunk[-3:]
     raise ValueError(f"{path.name}: missing DATA marker")
 
 
@@ -121,7 +135,7 @@ def read_spec_file(
 
     # Locate the params line that follows "DATA\r\n" then the data rows.
     data_section = raw[data_pos:]
-    eol = b"\r\n" if b"\r\n" in data_section[:6] else b"\n"
+    eol = b"\r\n" if data_section[4:6] == b"\r\n" else b"\n"
     eol_len = len(eol)
     first_eol = data_section.find(eol)
     params_start = first_eol + eol_len
@@ -176,7 +190,7 @@ def read_spec_file(
     y_units: dict[str, str] = {"I": "A", "Z": "m", "V": "V"}
 
     # Factor out SpecFreq — used both for x_array and metadata.
-    spec_freq = float(_f(find_hdr(hdr, "SpecFreq", "1000"), 1000.0))
+    spec_freq = _f(find_hdr(hdr, "SpecFreq", "1000"), 1000.0)
 
     if is_time_trace:
         x_array = arr[:, 0] / spec_freq  # sample index / Hz → seconds
@@ -199,6 +213,7 @@ def read_spec_file(
         "filename": path.name,
         "bias_mv": float(_f(bias_raw, 0.0)),
         "spec_freq_hz": spec_freq,
+        # "GainPre 10^" is the canonical Createc key for preamplifier gain exponent.
         "gain_pre_exp": float(_f(find_hdr(hdr, "GainPre 10^", "9"), 9.0)),
         "fb_log": hdr.get("FBLog", "0").strip() == "1",
         "sweep_type": "time_trace" if is_time_trace else "bias_sweep",
@@ -239,6 +254,7 @@ def _detect_time_trace(
     short bias sweeps or time traces with DAC noise.
     """
     # Collect voltages from Vpoint entries that have a non-zero time span.
+    # Vpoint.V is stored in mV in Createc format — same units as threshold_mv.
     vpoint_volts: list[float] = []
     for i in range(8):
         t = _f(hdr.get(f"Vpoint{i}.t", "0"), 0.0)
@@ -261,6 +277,8 @@ def _parse_vert_header(hb: bytes) -> dict[str, str]:
     Handles both 'internal / display=value' and plain 'key=value' formats.
     Uses latin-1 encoding to preserve special characters (e.g. Å).
     """
+    if any(b > 0x7F for b in hb):
+        log.warning("_parse_vert_header: non-ASCII bytes found in header; decoded as latin-1")
     hdr: dict[str, str] = {}
     for line in hb.splitlines():
         line = line.strip()
