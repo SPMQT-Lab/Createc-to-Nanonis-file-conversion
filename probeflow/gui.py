@@ -298,8 +298,15 @@ def render_spec_thumbnail(
         from matplotlib.backends.backend_agg import FigureCanvasAgg
 
         spec = read_spec_file(vert_path)
-        ch   = "I"
-        y    = spec.channels.get(ch)
+        # Prefer the first default channel; fall back to 'I' then first available
+        ch = None
+        if spec.default_channels:
+            ch = spec.default_channels[0]
+        elif "I" in spec.channels:
+            ch = "I"
+        elif spec.channels:
+            ch = next(iter(spec.channels))
+        y = spec.channels.get(ch) if ch else None
         if y is None or len(y) == 0:
             return None
         x = spec.x_array
@@ -454,6 +461,11 @@ def scan_image_folder(root: Path) -> list[SxmFile]:
 
         for p in sorted(matches):
             if p.stem in by_stem:
+                continue
+            # Skip spectroscopy files that share the .dat extension with image files
+            from probeflow.file_type import FileType, sniff_file_type
+            ft = sniff_file_type(p)
+            if ft in (FileType.CREATEC_SPEC, FileType.NANONIS_SPEC):
                 continue
             try:
                 scan = load_scan(p)
