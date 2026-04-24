@@ -408,7 +408,7 @@ def _cmd_pipeline(args) -> int:
                   "--steps align-rows:median plane-bg:1 smooth:1.5")
         return 2
 
-    ops: List[Callable[[np.ndarray], np.ndarray]] = []
+    ops: List[_Op] = []
     for raw in steps_spec:
         name, _, params = raw.partition(":")
         name = name.strip()
@@ -443,12 +443,13 @@ def _cmd_pipeline(args) -> int:
             log.error("Unknown pipeline step: %r", name)
             return 2
 
-    def _compose(a: np.ndarray) -> np.ndarray:
-        for op in ops:
-            a = op(a)
-        return a
-
-    scan = _apply_to_plane(args.input, args.plane, _compose)
+    scan = load_scan(args.input)
+    if args.plane >= scan.n_planes:
+        log.error("Plane %d not present (file has %d)", args.plane, scan.n_planes)
+        return 1
+    for op in ops:
+        scan.planes[args.plane] = op(scan.planes[args.plane])
+        _record_op(scan, op.name, op.params)
     _write_output(args, scan, default_suffix=".sxm")
     return 0
 
@@ -619,6 +620,10 @@ def _cmd_tv_denoise(args) -> int:
         max_iter=args.max_iter,
         nabla_comp=args.nabla_comp,
     )
+    _record_op(scan, "tv_denoise", {
+        "method": args.method, "lam": args.lam, "alpha": args.alpha,
+        "tau": args.tau, "max_iter": args.max_iter, "nabla_comp": args.nabla_comp,
+    })
     _write_output(args, scan, default_suffix="_tv.sxm")
     return 0
 
