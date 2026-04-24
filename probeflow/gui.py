@@ -60,6 +60,7 @@ def _open_url(url: str) -> None:
         pass
 
 from probeflow import processing as _proc
+from probeflow.common import mark_processed_stem
 from probeflow.scan import SUPPORTED_SUFFIXES, load_scan
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -4255,7 +4256,16 @@ class ProbeFlowWindow(QMainWindow):
         suffix     = settings["suffix"]
         filt       = settings["file_filter"]
         label      = settings["format_label"]
-        suggested  = str(Path.home() / f"{entry.stem}.{suffix}")
+
+        _, _, proc_state = self._grid.get_card_state(entry.stem)
+        _ACTIVE_PROC_KEYS = (
+            "remove_bad_lines", "align_rows", "bg_order",
+            "facet_level", "smooth_sigma", "edge_method", "fft_mode",
+        )
+        has_processing = any(proc_state.get(k) for k in _ACTIVE_PROC_KEYS)
+        out_stem = mark_processed_stem(entry.stem) if has_processing else entry.stem
+        suggested = str(Path.home() / f"{out_stem}.{suffix}")
+
         out_path, _ = QFileDialog.getSaveFileName(
             self, f"Save as {label}", suggested, filt)
         if not out_path:
