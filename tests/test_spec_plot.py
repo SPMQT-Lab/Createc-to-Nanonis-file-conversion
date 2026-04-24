@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from probeflow.spec_plot import choose_display_unit
+from probeflow.spec_plot import choose_display_unit, spec_position_to_pixel
 
 
 class TestChooseDisplayUnit:
@@ -81,3 +81,64 @@ class TestChooseDisplayUnit:
         scale, unit = choose_display_unit("m", None)
         assert scale == 1.0
         assert unit == "m"
+
+
+class TestSpecPositionToPixel:
+    W = H = 1e-7  # 100 nm scan
+
+    def test_centre_maps_to_half_half(self):
+        result = spec_position_to_pixel(
+            0.0, 0.0, (64, 64), (self.W, self.H), (0.0, 0.0), 0.0)
+        assert result is not None
+        assert abs(result[0] - 0.5) < 1e-9
+        assert abs(result[1] - 0.5) < 1e-9
+
+    def test_top_left_corner(self):
+        # World position at left edge and physically highest y maps to (0, 0)
+        result = spec_position_to_pixel(
+            -self.W / 2, self.H / 2, (64, 64), (self.W, self.H), (0.0, 0.0), 0.0)
+        assert result is not None
+        assert abs(result[0] - 0.0) < 1e-9
+        assert abs(result[1] - 0.0) < 1e-9
+
+    def test_bottom_right_corner(self):
+        result = spec_position_to_pixel(
+            self.W / 2, -self.H / 2, (64, 64), (self.W, self.H), (0.0, 0.0), 0.0)
+        assert result is not None
+        assert abs(result[0] - 1.0) < 1e-9
+        assert abs(result[1] - 1.0) < 1e-9
+
+    def test_position_outside_scan_returns_none(self):
+        result = spec_position_to_pixel(
+            1e-3, 0.0, (64, 64), (self.W, self.H), (0.0, 0.0), 0.0)
+        assert result is None
+
+    def test_nonzero_offset_shifts_centre(self):
+        ox, oy = 100e-9, 50e-9
+        result = spec_position_to_pixel(
+            ox, oy, (64, 64), (self.W, self.H), (ox, oy), 0.0)
+        assert result is not None
+        assert abs(result[0] - 0.5) < 1e-9
+        assert abs(result[1] - 0.5) < 1e-9
+
+    def test_nonzero_offset_excludes_world_origin(self):
+        ox, oy = 100e-9, 50e-9
+        result = spec_position_to_pixel(
+            0.0, 0.0, (64, 64), (self.W, self.H), (ox, oy), 0.0)
+        assert result is None
+
+    def test_90_degree_rotation(self):
+        # At 90°: cos=0, sin=1
+        # dx=W/4, dy=0 → dx_rot=0, dy_rot=-W/4
+        # → frac_x=0.5, frac_y_from_bottom=0.25 → frac_y=0.75
+        result = spec_position_to_pixel(
+            self.W / 4, 0.0, (64, 64), (self.W, self.H), (0.0, 0.0), 90.0)
+        assert result is not None
+        assert abs(result[0] - 0.5) < 1e-9
+        assert abs(result[1] - 0.75) < 1e-9
+
+    def test_default_offset_is_zero(self):
+        result = spec_position_to_pixel(0.0, 0.0, (64, 64), (self.W, self.H))
+        assert result is not None
+        assert abs(result[0] - 0.5) < 1e-9
+        assert abs(result[1] - 0.5) < 1e-9

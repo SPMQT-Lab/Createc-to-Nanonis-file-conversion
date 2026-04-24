@@ -209,6 +209,60 @@ def plot_spec_positions(
     return ax
 
 
+def spec_position_to_pixel(
+    x_m: float,
+    y_m: float,
+    scan_shape: tuple[int, int],
+    scan_range_m: tuple[float, float],
+    scan_offset_m: Optional[tuple[float, float]] = None,
+    scan_angle_deg: float = 0.0,
+) -> Optional[tuple[float, float]]:
+    """Convert a tip position to fractional image coordinates.
+
+    Parameters
+    ----------
+    x_m, y_m : float
+        Tip position in world coordinates (metres).
+    scan_shape : tuple[int, int]
+        (Ny, Nx) pixel dimensions of the image (currently unused in the
+        fractional result, kept for API symmetry with pixel-based callers).
+    scan_range_m : tuple[float, float]
+        (width_m, height_m) physical size of the scan.
+    scan_offset_m : tuple[float, float] | None
+        (ox_m, oy_m) scan-frame centre in world coordinates. Defaults to
+        (0, 0) — image centred at the origin.
+    scan_angle_deg : float
+        Scan rotation angle in degrees (counter-clockwise from +x-axis).
+
+    Returns
+    -------
+    tuple[float, float] | None
+        (frac_x, frac_y) where (0, 0) is the top-left corner and (1, 1) is
+        the bottom-right corner of the image, or ``None`` if the position
+        falls outside the scan extent.
+    """
+    w_m, h_m = scan_range_m
+    ox_m, oy_m = scan_offset_m if scan_offset_m is not None else (0.0, 0.0)
+    theta = np.radians(scan_angle_deg)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+
+    dx = x_m - ox_m
+    dy = y_m - oy_m
+    dx_rot = cos_t * dx + sin_t * dy
+    dy_rot = -sin_t * dx + cos_t * dy
+
+    # Fractional position in the scan frame (0 = left/bottom, 1 = right/top)
+    frac_x = (dx_rot + w_m / 2.0) / w_m
+    frac_y_from_bottom = (dy_rot + h_m / 2.0) / h_m
+
+    if not (0.0 <= frac_x <= 1.0 and 0.0 <= frac_y_from_bottom <= 1.0):
+        return None
+
+    # Image row 0 is the top (highest physical y), so invert y.
+    frac_y = 1.0 - frac_y_from_bottom
+    return frac_x, frac_y
+
+
 def plot_current_histogram(
     spec: SpecData,
     channel: str = "I",
