@@ -138,3 +138,9 @@ def read_dat(path) -> Scan:
         source_path=path,
         source_format="dat",
     )
+
+
+def read_dat_metadata(path):
+    """Return :class:`~probeflow.metadata.ScanMetadata` for a Createc ``.dat``."""
+    from probeflow.metadata import metadata_from_scan
+    return metadata_from_scan(read_dat(path))

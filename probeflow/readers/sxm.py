@@ -40,3 +40,9 @@ def read_sxm(path) -> Scan:
         source_path=path,
         source_format="sxm",
     )
+
+
+def read_sxm_metadata(path):
+    """Return :class:`~probeflow.metadata.ScanMetadata` for a Nanonis ``.sxm``."""
+    from probeflow.metadata import metadata_from_scan
+    return metadata_from_scan(read_sxm(path))

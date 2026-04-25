@@ -54,6 +54,32 @@ pip install probeflow[dev]        # pytest
 
 ---
 
+## Image loading API
+
+ProbeFlow exposes two levels for loading scan images:
+
+```python
+from probeflow import load_scan, read_scan_metadata
+
+# Fully load image data (planes, physical units, processing-ready)
+scan = load_scan("path/to/scan.dat")       # Createc .dat
+scan = load_scan("path/to/scan.sxm")       # Nanonis .sxm
+
+# Lightweight metadata only (no image arrays)
+meta = read_scan_metadata("path/to/scan.dat")
+print(meta.source_format)   # "createc_dat" or "nanonis_sxm"
+print(meta.shape)            # (Ny, Nx) after any format corrections
+print(meta.bias)             # V
+print(meta.setpoint)         # A
+print(meta.scan_range)       # (width_m, height_m)
+```
+
+`read_scan_metadata` is designed so that folder browsing can later retrieve
+scan headers without loading pixel data, but both functions share the same
+public `ScanMetadata` type today.
+
+---
+
 ## Quick Start
 
 ### Launch the GUI

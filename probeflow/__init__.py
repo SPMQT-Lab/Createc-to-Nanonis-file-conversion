@@ -23,5 +23,10 @@ __version__ = "beta"
 # Public API: the vendor-agnostic Scan abstraction + dispatcher.
 # Importing these does not pull in PySide6 / matplotlib.
 from probeflow.scan import Scan, load_scan
+from probeflow.metadata import ScanMetadata, read_scan_metadata, metadata_from_scan
 
-__all__ = ["Scan", "load_scan", "__version__"]
+__all__ = [
+    "Scan", "load_scan",
+    "ScanMetadata", "read_scan_metadata", "metadata_from_scan",
+    "__version__",
+]
