@@ -83,6 +83,14 @@ def read_dat(path) -> Scan:
     # writers (e.g. dat→sxm construction) see the corrected pixel count.
     hdr["Num.Y"] = str(Ny)
 
+    # Drop the first column from every channel.  Createc stores a DAC
+    # initialisation value of 0 at stack[:,0,0] and a systematic feedback-
+    # settling transient at stack[:,1:,0] (first pixel of every raster line).
+    # Neither is real topography, so we strip col 0 here.
+    stack = stack[:, :, 1:]
+    Nx -= 1
+    hdr["Num.X"] = str(Nx)
+
     bits = get_dac_bits(hdr)
     vpd = v_per_dac(bits)
     zs = z_scale_m_per_dac(hdr, vpd)

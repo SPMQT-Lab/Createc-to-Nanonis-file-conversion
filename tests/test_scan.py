@@ -275,3 +275,48 @@ class TestBackwardOrientation:
             f"Round-trip changed Z fwd/bwd correlation: "
             f".dat={direct_dat:.4f}, .sxm={direct_sxm:.4f}"
         )
+
+
+# ─── Createc first-column artifact ──────────────────────────────────────────
+
+_CREATEC_STEP   = TESTDATA / "createc_scan_step_20nm.dat"
+_CREATEC_TERRACE = TESTDATA / "createc_scan_terrace_109nm.dat"
+
+
+class TestCreatecFirstColumnArtifact:
+    """Guard against the Createc scan-line-start artifact.
+
+    Createc stores 0.0 (DAC initialisation) at byte offset 0 of the payload
+    and a systematic feedback-settling transient at the first pixel of every
+    subsequent raster line.  read_dat() strips col 0 from all planes so
+    neither artefact reaches display code.
+    """
+
+    @pytest.mark.parametrize("path", [_CREATEC_STEP, _CREATEC_TERRACE])
+    def test_no_exact_zero_in_z_forward(self, path):
+        scan = load_scan(path)
+        assert not np.any(scan.planes[0] == 0.0), (
+            "planes[0] contains an exact 0.0 — DAC initialisation pixel was not stripped"
+        )
+
+    @pytest.mark.parametrize("path", [_CREATEC_STEP, _CREATEC_TERRACE])
+    def test_nx_header_matches_array_width(self, path):
+        scan = load_scan(path)
+        _, Nx_arr = scan.planes[0].shape
+        Nx_hdr = int(scan.header["Num.X"])
+        assert Nx_arr == Nx_hdr, (
+            f"Array width {Nx_arr} does not match Num.X header {Nx_hdr}"
+        )
+
+    def test_step_col0_col1_per_row_diff_is_small(self):
+        # Before the fix, col0[row] was systematically ~0.66 Å higher than
+        # col1[row] on every line of the step scan.  After stripping, col0 is
+        # the old col1 and col1 is the old col2 — adjacent pixels in the same
+        # raster line — so their per-row absolute difference should be < 5 pm.
+        scan = load_scan(_CREATEC_STEP)
+        p = scan.planes[0]
+        mean_diff = float(np.abs(p[:, 0] - p[:, 1]).mean())
+        assert mean_diff < 5e-12, (
+            f"Per-row |col0-col1| mean {mean_diff:.3e} m exceeds 5 pm — "
+            "systematic first-column offset may have returned"
+        )
