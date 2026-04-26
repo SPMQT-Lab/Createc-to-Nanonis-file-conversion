@@ -17,6 +17,15 @@ Design notes
 * Ported loosely from UniMR (particle segmentation + classification) and
   AiSurf (template-matching atom counter). Both are PNG-only; here they
   become first-class STM operations with physical units preserved.
+
+Placement note for future maintainers / AI coding agents
+--------------------------------------------------------
+These routines are the numerical kernels for the GUI Features tab, not Browse
+thumbnail logic and not the standard Viewer processing panel. Keep this module
+GUI-free and import it lazily from ``probeflow.gui_features`` or the CLI. That
+keeps optional analysis dependencies such as OpenCV and scikit-learn out of the
+core browse/convert path and prevents specialized particle/counting tools from
+entangling basic image manipulation.
 """
 
 from __future__ import annotations

@@ -955,6 +955,14 @@ def export_png(
 # 12.  tv_denoise  (Chambolle–Pock primal-dual, ported from AiSurf)
 # ═════════════════════════════════════════════════════════════════════════════
 
+# Features-tab placement note:
+# ``tv_denoise`` is kept here as a GUI-free numerical kernel because it is also
+# useful from the CLI and tests. When this becomes a GUI workflow, wire it from
+# ``probeflow.gui_features`` as a specialized Features-tab operation, not as a
+# Browse thumbnail correction and not as a normal Viewer quick-processing
+# control. The intent is to keep experimental/optional add-ons isolated from
+# routine browsing, conversion, and basic image manipulation dependencies.
+
 def _nabla_apply(x: np.ndarray, Ny: int, Nx: int, comp: str) -> np.ndarray:
     """Forward gradient (periodic-edge) for TV methods.
 
