@@ -39,6 +39,7 @@ _SUPPORTED_OPS: frozenset[str] = frozenset({
     "patch_interpolate",
     "linear_undistort",
     "set_zero_point",
+    "set_zero_plane",
     "roi",
 })
 
@@ -223,6 +224,12 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
                 a,
                 int(p.get("y_px", 0)),
                 int(p.get("x_px", 0)),
+                patch=int(p.get("patch", 1)),
+            )
+        elif step.op == "set_zero_plane":
+            a = _proc.set_zero_plane(
+                a,
+                p.get("points_px", ()),
                 patch=int(p.get("patch", 1)),
             )
         elif step.op == "roi":

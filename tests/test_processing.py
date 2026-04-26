@@ -18,6 +18,7 @@ from probeflow.processing import (
     measure_periodicity,
     periodic_notch_filter,
     remove_bad_lines,
+    set_zero_plane,
     stm_line_background,
     subtract_background,
     patch_interpolate,
@@ -480,6 +481,40 @@ class TestExportPng:
         with pytest.raises(ValueError):
             export_png(arr, tmp_path / "x.png", "gray", 1.0, 99.0,
                        lut_fn=_lut, scan_range_m=(0.0, 0.0))
+
+
+# ─── manual zero plane ───────────────────────────────────────────────────────
+
+class TestSetZeroPlane:
+    def test_three_points_define_plane_to_subtract(self):
+        yy, xx = np.mgrid[:12, :10]
+        arr = 2.0 * xx - 0.75 * yy + 6.0
+
+        out = set_zero_plane(arr, [(0, 0), (9, 0), (0, 11)], patch=0)
+
+        np.testing.assert_allclose(out, np.zeros_like(arr), atol=1e-12)
+        assert out.dtype == np.float64
+
+    def test_degenerate_points_leave_copy_unchanged(self):
+        yy, xx = np.mgrid[:8, :8]
+        arr = xx + yy
+
+        out = set_zero_plane(arr, [(0, 0), (1, 1), (2, 2)], patch=0)
+
+        np.testing.assert_allclose(out, arr)
+        assert out is not arr
+
+    def test_nan_pixels_are_preserved(self):
+        yy, xx = np.mgrid[:8, :8]
+        arr = 0.5 * xx + 1.5 * yy + 2.0
+        arr = arr.astype(float)
+        arr[4, 4] = np.nan
+
+        out = set_zero_plane(arr, [(0, 0), (7, 0), (0, 7)], patch=0)
+
+        assert np.isnan(out[4, 4])
+        finite = np.isfinite(out)
+        np.testing.assert_allclose(out[finite], 0.0, atol=1e-12)
 
 
 # ─── CLI: plane-bg order extension ───────────────────────────────────────────

@@ -33,6 +33,7 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "patch_interpolate_iterations",
     "linear_undistort",
     "set_zero_xy",
+    "set_zero_plane_points",
     "processing_scope",
     "roi_rect",
 )
@@ -185,6 +186,20 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             }))
         except (TypeError, ValueError, IndexError):
             pass
+
+    zero_plane = gui_state.get("set_zero_plane_points")
+    if zero_plane is not None:
+        points = []
+        for point in zero_plane:
+            try:
+                points.append((int(point[0]), int(point[1])))
+            except (TypeError, ValueError, IndexError):
+                continue
+        if len(points) >= 3:
+            _append_step(ProcessingStep("set_zero_plane", {
+                "points_px": points[:3],
+                "patch": int(gui_state.get("set_zero_patch", 1)),
+            }))
 
     return ProcessingState(steps=steps)
 

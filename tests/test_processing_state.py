@@ -358,6 +358,23 @@ class TestGuiConversion:
         state = processing_state_from_gui({"set_zero_xy": "not-a-tuple"})
         assert len(state.steps) == 0
 
+    def test_set_zero_plane_params_captured(self):
+        gui = {"set_zero_plane_points": [(0, 0), (9, 0), (0, 9)], "set_zero_patch": 0}
+        state = processing_state_from_gui(gui)
+        assert len(state.steps) == 1
+        step = state.steps[0]
+        assert step.op == "set_zero_plane"
+        assert step.params == {
+            "points_px": [(0, 0), (9, 0), (0, 9)],
+            "patch": 0,
+        }
+
+    def test_set_zero_plane_requires_three_good_points(self):
+        state = processing_state_from_gui({
+            "set_zero_plane_points": [(0, 0), "bad", (0, 9)],
+        })
+        assert len(state.steps) == 0
+
     def test_empty_gui_state(self):
         state = processing_state_from_gui({})
         assert len(state.steps) == 0
@@ -592,3 +609,14 @@ class TestApplyKnownSteps:
         assert abs(float(result[5, 4])) < 1e-12
         # And every other pixel shifts by the same offset (-42.0).
         np.testing.assert_array_almost_equal(result, arr - 42.0)
+
+    def test_set_zero_plane_removes_clicked_plane(self):
+        yy, xx = np.mgrid[:10, :10]
+        arr = 1.25 * xx - 0.5 * yy + 7.0
+        state = ProcessingState(steps=[ProcessingStep("set_zero_plane", {
+            "points_px": [(0, 0), (9, 0), (0, 9)],
+            "patch": 0,
+        })])
+        result = apply_processing_state(arr, state)
+
+        np.testing.assert_allclose(result, np.zeros_like(arr), atol=1e-12)

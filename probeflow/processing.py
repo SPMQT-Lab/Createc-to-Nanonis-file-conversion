@@ -1234,6 +1234,59 @@ def set_zero_point(
     return arr.astype(np.float64, copy=True) - ref
 
 
+def set_zero_plane(
+    arr: np.ndarray,
+    points_px: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    *,
+    patch: int = 1,
+) -> np.ndarray:
+    """Subtract the plane defined by three clicked reference points.
+
+    ``points_px`` contains ``(x_px, y_px)`` coordinates.  The height at each
+    point is estimated from a small finite-valued patch, then a plane
+    ``z = ax + by + c`` is fitted through those three references and subtracted
+    from the whole image.  This is a manual zero-plane operation, distinct from
+    automatic polynomial/background subtraction.
+    """
+    if arr.ndim != 2:
+        raise ValueError("set_zero_plane expects a 2-D array")
+    if len(points_px) < 3:
+        return arr.astype(np.float64, copy=True)
+
+    a = arr.astype(np.float64, copy=True)
+    Ny, Nx = a.shape
+    p = max(0, int(patch))
+    samples = []
+    for point in points_px[:3]:
+        try:
+            x_px, y_px = int(point[0]), int(point[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        x_px = max(0, min(Nx - 1, x_px))
+        y_px = max(0, min(Ny - 1, y_px))
+        y0, y1 = max(0, y_px - p), min(Ny, y_px + p + 1)
+        x0, x1 = max(0, x_px - p), min(Nx, x_px + p + 1)
+        vals = a[y0:y1, x0:x1]
+        finite = vals[np.isfinite(vals)]
+        if finite.size == 0:
+            continue
+        samples.append((float(x_px), float(y_px), float(np.mean(finite))))
+
+    if len(samples) < 3:
+        return a
+
+    A = np.array([[x, y, 1.0] for x, y, _z in samples], dtype=np.float64)
+    if np.linalg.matrix_rank(A) < 3:
+        return a
+    z = np.array([z for _x, _y, z in samples], dtype=np.float64)
+    coeffs = np.linalg.solve(A, z)
+    yy, xx = np.mgrid[:Ny, :Nx]
+    plane = coeffs[0] * xx + coeffs[1] * yy + coeffs[2]
+    out = a - plane
+    out[~np.isfinite(a)] = np.nan
+    return out
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 15.  fft_soft_border  (ImageJ FFT_Soft_Border port)
 # ═════════════════════════════════════════════════════════════════════════════

@@ -1367,7 +1367,8 @@ class _ZoomLabel(QLabel):
         self._set_zero_mode: bool = False
         self._roi_mode: bool = False
         self._roi_start = None
-        self._roi_rect = None
+        self._roi_drag_rect = None
+        self._roi_rect_frac = None
         self.setMouseTracking(True)
 
     def set_set_zero_mode(self, enabled: bool):
@@ -1378,13 +1379,33 @@ class _ZoomLabel(QLabel):
         self._roi_mode = bool(enabled)
         if not enabled:
             self._roi_start = None
-            self._roi_rect = None
+            self._roi_drag_rect = None
             self.update()
         self._update_cursor()
 
     def clear_roi(self):
         self._roi_start = None
-        self._roi_rect = None
+        self._roi_drag_rect = None
+        self._roi_rect_frac = None
+        self.update()
+
+    def set_roi_rect_frac(self, rect):
+        """Set persistent ROI overlay as fractional image coordinates.
+
+        The ROI overlay is intentionally independent of the image pixmap.  It
+        stays visible across re-rendering, processing changes, and zoom updates
+        so users can see which region has been selected/affected.
+        """
+        if rect is None:
+            self._roi_rect_frac = None
+        else:
+            x0, y0, x1, y1 = [float(v) for v in rect]
+            self._roi_rect_frac = (
+                max(0.0, min(1.0, min(x0, x1))),
+                max(0.0, min(1.0, min(y0, y1))),
+                max(0.0, min(1.0, max(x0, x1))),
+                max(0.0, min(1.0, max(y0, y1))),
+            )
         self.update()
 
     def _update_cursor(self):
@@ -1428,6 +1449,17 @@ class _ZoomLabel(QLabel):
         """Fractional image coords → label pixel coords."""
         return int(frac_x * self.width()), int(frac_y * self.height())
 
+    def _roi_rect_from_frac(self) -> QRect | None:
+        if self._roi_rect_frac is None:
+            return None
+        x0, y0, x1, y1 = self._roi_rect_frac
+        return QRect(
+            int(round(x0 * self.width())),
+            int(round(y0 * self.height())),
+            int(round((x1 - x0) * self.width())),
+            int(round((y1 - y0) * self.height())),
+        ).normalized()
+
     def paintEvent(self, event):
         super().paintEvent(event)
         if self._pixmap_orig is None:
@@ -1445,15 +1477,16 @@ class _ZoomLabel(QLabel):
                 painter.setPen(QPen(QColor("black")))
                 painter.drawText(QRect(sx - r, sy - r, 2 * r, 2 * r),
                                  Qt.AlignCenter, str(i + 1))
-        if self._roi_rect is not None:
+        roi_rect = self._roi_drag_rect or self._roi_rect_from_frac()
+        if roi_rect is not None:
             painter.setBrush(QBrush(QColor(137, 180, 250, 45)))
             painter.setPen(QPen(QColor("#89b4fa"), 2))
-            painter.drawRect(self._roi_rect)
+            painter.drawRect(roi_rect)
         painter.end()
 
     def mouseMoveEvent(self, event):
         if self._roi_mode and self._roi_start is not None:
-            self._roi_rect = QRect(self._roi_start, event.pos()).normalized()
+            self._roi_drag_rect = QRect(self._roi_start, event.pos()).normalized()
             self.update()
             return
         if self._show_markers and self._markers and self._pixmap_orig is not None:
@@ -1477,7 +1510,7 @@ class _ZoomLabel(QLabel):
         if (event.button() == Qt.LeftButton and self._roi_mode
                 and self._pixmap_orig is not None):
             self._roi_start = event.pos()
-            self._roi_rect = QRect(self._roi_start, self._roi_start)
+            self._roi_drag_rect = QRect(self._roi_start, self._roi_start)
             self.update()
             return
         if (event.button() == Qt.LeftButton and self._show_markers
@@ -1508,10 +1541,11 @@ class _ZoomLabel(QLabel):
                 y0 = max(0.0, min(1.0, rect.top() / float(self.height())))
                 x1 = max(0.0, min(1.0, rect.right() / float(self.width())))
                 y1 = max(0.0, min(1.0, rect.bottom() / float(self.height())))
-                self._roi_rect = rect
+                self._roi_drag_rect = None
+                self.set_roi_rect_frac((x0, y0, x1, y1))
                 self.roi_selected.emit(x0, y0, x1, y1)
             else:
-                self._roi_rect = None
+                self._roi_drag_rect = None
             self.update()
             return
         super().mouseReleaseEvent(event)
@@ -1925,6 +1959,8 @@ class ImageViewerDialog(QDialog):
         self._scan_shape: Optional[tuple] = None
         self._scan_format: str = ""
         self._roi_rect_px: Optional[tuple[int, int, int, int]] = None
+        self._zero_pick_mode: str = "offset"
+        self._zero_plane_points_px: list[tuple[int, int]] = []
 
         self._build()
         self._processing_panel.set_state(self._processing)
@@ -2179,15 +2215,25 @@ class ImageViewerDialog(QDialog):
         self._spec_show_cb.toggled.connect(self._on_spec_show_toggled)
         right_lay.addWidget(self._spec_show_cb)
 
-        # Gwyddion-style "Set Z=0 here": toggle, then click on the image.
-        self._set_zero_btn = QPushButton("Set Z=0 (click on image)")
+        # Manual zeroing lives outside the automatic background controls on
+        # purpose. Future background/plane tools may offer an explicit
+        # "zero after subtraction" option, but should not silently change the
+        # user's height reference as a side effect of fitting a background.
+        self._set_zero_btn = QPushButton("Set zero offset (1 click)")
         self._set_zero_btn.setCheckable(True)
         self._set_zero_btn.setFont(QFont("Helvetica", 8))
         self._set_zero_btn.setFixedHeight(24)
         self._set_zero_btn.toggled.connect(self._on_set_zero_mode_toggled)
         right_lay.addWidget(self._set_zero_btn)
 
-        self._set_zero_clear_btn = QPushButton("Clear Z=0 reference")
+        self._set_zero_plane_btn = QPushButton("Set zero plane (3 clicks)")
+        self._set_zero_plane_btn.setCheckable(True)
+        self._set_zero_plane_btn.setFont(QFont("Helvetica", 8))
+        self._set_zero_plane_btn.setFixedHeight(24)
+        self._set_zero_plane_btn.toggled.connect(self._on_set_zero_plane_mode_toggled)
+        right_lay.addWidget(self._set_zero_plane_btn)
+
+        self._set_zero_clear_btn = QPushButton("Clear zero references")
         self._set_zero_clear_btn.setFont(QFont("Helvetica", 8))
         self._set_zero_clear_btn.setFixedHeight(22)
         self._set_zero_clear_btn.clicked.connect(self._on_clear_set_zero)
@@ -2479,13 +2525,33 @@ class ImageViewerDialog(QDialog):
     def _on_roi_mode_toggled(self, checked: bool):
         if checked and self._set_zero_btn.isChecked():
             self._set_zero_btn.setChecked(False)
+        if checked and self._set_zero_plane_btn.isChecked():
+            self._set_zero_plane_btn.setChecked(False)
         self._zoom_lbl.set_roi_mode(checked)
         self._roi_btn.setText("Selecting..." if checked else "Select region")
 
     def _on_set_zero_mode_toggled(self, checked: bool):
         if checked and self._roi_btn.isChecked():
             self._roi_btn.setChecked(False)
-        self._zoom_lbl.set_set_zero_mode(checked)
+        if checked and self._set_zero_plane_btn.isChecked():
+            self._set_zero_plane_btn.setChecked(False)
+        if checked:
+            self._zero_pick_mode = "offset"
+            self._status_lbl.setText("Click one reference point to set zero offset.")
+        self._zoom_lbl.set_set_zero_mode(checked or self._set_zero_plane_btn.isChecked())
+
+    def _on_set_zero_plane_mode_toggled(self, checked: bool):
+        if checked and self._roi_btn.isChecked():
+            self._roi_btn.setChecked(False)
+        if checked and self._set_zero_btn.isChecked():
+            self._set_zero_btn.setChecked(False)
+        if checked:
+            self._zero_pick_mode = "plane"
+            self._zero_plane_points_px = []
+            self._status_lbl.setText("Click 3 reference points to define the zero plane.")
+        elif self._zero_pick_mode == "plane" and len(self._zero_plane_points_px) < 3:
+            self._zero_plane_points_px = []
+        self._zoom_lbl.set_set_zero_mode(checked or self._set_zero_btn.isChecked())
 
     def _on_roi_selected(self, x0f: float, y0f: float, x1f: float, y1f: float):
         arr = self._raw_arr if self._raw_arr is not None else self._display_arr
@@ -2525,7 +2591,7 @@ class ImageViewerDialog(QDialog):
         self._roi_status_lbl.setText("Selection: none")
 
     def _on_set_zero_pick(self, frac_x: float, frac_y: float):
-        """Handle a click on the image while Set Z=0 mode is active."""
+        """Handle image clicks while manual zero-offset/zero-plane mode is active."""
         if self._raw_arr is None:
             return
         Ny, Nx = self._raw_arr.shape
@@ -2533,19 +2599,45 @@ class ImageViewerDialog(QDialog):
         y_px = int(round(frac_y * (Ny - 1)))
         x_px = max(0, min(x_px, Nx - 1))
         y_px = max(0, min(y_px, Ny - 1))
+
+        if self._zero_pick_mode == "plane" and self._set_zero_plane_btn.isChecked():
+            self._zero_plane_points_px.append((x_px, y_px))
+            n = len(self._zero_plane_points_px)
+            if n < 3:
+                self._status_lbl.setText(
+                    f"Zero plane point {n}/3 set at ({x_px}, {y_px}); click {3 - n} more."
+                )
+                return
+            self._processing['set_zero_plane_points'] = self._zero_plane_points_px[:3]
+            self._processing['set_zero_patch'] = 1
+            self._processing.pop('set_zero_xy', None)
+            if self._set_zero_plane_btn.isChecked():
+                self._set_zero_plane_btn.setChecked(False)
+            self._status_lbl.setText("Zero plane set from 3 reference points.")
+            self._load_current()
+            return
+
         self._processing['set_zero_xy'] = (x_px, y_px)
         self._processing['set_zero_patch'] = 1
-        # Toggle off so the next click navigates normally.
+        self._processing.pop('set_zero_plane_points', None)
+        self._zero_plane_points_px = []
         if self._set_zero_btn.isChecked():
             self._set_zero_btn.setChecked(False)
-        self._status_lbl.setText(f"Z=0 set at pixel ({x_px}, {y_px})")
+        self._status_lbl.setText(f"Zero offset set at pixel ({x_px}, {y_px})")
         self._load_current()
 
     def _on_clear_set_zero(self):
-        if 'set_zero_xy' in self._processing:
-            self._processing.pop('set_zero_xy', None)
-            self._processing.pop('set_zero_patch', None)
-            self._status_lbl.setText("Z=0 reference cleared")
+        had_zero = any(k in self._processing for k in ("set_zero_xy", "set_zero_plane_points"))
+        self._processing.pop('set_zero_xy', None)
+        self._processing.pop('set_zero_plane_points', None)
+        self._processing.pop('set_zero_patch', None)
+        self._zero_plane_points_px = []
+        if self._set_zero_btn.isChecked():
+            self._set_zero_btn.setChecked(False)
+        if self._set_zero_plane_btn.isChecked():
+            self._set_zero_plane_btn.setChecked(False)
+        self._status_lbl.setText("Zero references cleared")
+        if had_zero:
             self._load_current()
 
     # ── Histogram drag handlers ────────────────────────────────────────────────
@@ -2671,6 +2763,7 @@ class ImageViewerDialog(QDialog):
             key: self._processing[key]
             for key in (
                 "set_zero_xy",
+                "set_zero_plane_points",
                 "set_zero_patch",
                 "periodic_notches",
                 "periodic_notch_radius",
