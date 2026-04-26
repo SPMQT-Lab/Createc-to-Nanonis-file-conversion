@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from probeflow.spec_io import SpecData, parse_spec_header, read_spec_file
+from probeflow.spec_io import SpecData, SpecMetadata, parse_spec_header, read_spec_file, read_spec_metadata
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -72,6 +72,28 @@ class TestParseSpecHeader:
         # parse_spec_header should succeed even on a file that is mostly data.
         hdr = parse_spec_header(VERT_BIAS_SWEEP)
         assert "DAC-Type" in hdr
+
+
+class TestReadSpecMetadata:
+    def test_returns_metadata_without_arrays(self):
+        meta = read_spec_metadata(VERT_BIAS_SWEEP)
+        assert isinstance(meta, SpecMetadata)
+        assert not hasattr(meta, "x_array")
+        assert not hasattr(meta, "channels_data")
+
+    def test_createc_metadata_matches_full_reader_summary(self, bias_sweep_spec):
+        meta = read_spec_metadata(VERT_BIAS_SWEEP)
+        assert meta.source_format == "createc_vert"
+        assert meta.channels == ("I", "Z", "V")
+        assert meta.units == ("A", "m", "V")
+        assert meta.metadata["sweep_type"] == bias_sweep_spec.metadata["sweep_type"]
+        assert meta.metadata["n_points"] == bias_sweep_spec.metadata["n_points"]
+        assert meta.bias == pytest.approx(bias_sweep_spec.metadata["bias_mv"] / 1000.0)
+
+    def test_time_trace_metadata_classification(self, time_trace_spec):
+        meta = read_spec_metadata(VERT_TIME_TRACE)
+        assert meta.metadata["sweep_type"] == time_trace_spec.metadata["sweep_type"]
+        assert meta.metadata["n_points"] == time_trace_spec.metadata["n_points"]
 
 
 # ─── read_spec_file — time trace ─────────────────────────────────────────────

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from probeflow.readers.nanonis_spec import read_nanonis_spec
-from probeflow.spec_io import read_spec_file
+from probeflow.spec_io import SpecMetadata, read_spec_file, read_spec_metadata
 
 
 TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
@@ -115,3 +115,17 @@ class TestDispatcher:
         spec = read_spec_file(vert)
         assert "I" in spec.channels
         assert "Z" in spec.channels
+
+    def test_read_spec_metadata_routes_nanonis(self, sts_spec):
+        meta = read_spec_metadata(STS)
+        assert isinstance(meta, SpecMetadata)
+        assert meta.source_format == "nanonis_dat_spectrum"
+        assert meta.metadata["sweep_type"] == sts_spec.metadata["sweep_type"]
+        assert meta.metadata["n_points"] == sts_spec.metadata["n_points"]
+        assert meta.channels == tuple(sts_spec.channel_order)
+
+    def test_read_spec_metadata_has_position_and_bias(self):
+        meta = read_spec_metadata(STS)
+        assert meta.position[0] != 0.0
+        assert meta.position[1] != 0.0
+        assert meta.bias == pytest.approx(-15e-3)

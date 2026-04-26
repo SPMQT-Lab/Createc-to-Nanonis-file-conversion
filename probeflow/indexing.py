@@ -190,33 +190,26 @@ def _item_from_spec(
     mtime_ns: Optional[int],
     size_bytes: Optional[int],
 ) -> ProbeFlowItem:
-    from probeflow.spec_io import read_spec_file
-    # TODO: replace with a header-only reader for nanonis_dat_spectrum to avoid
-    # loading the full data array during indexing.
-    spec = read_spec_file(path)
-    ch_names = tuple(spec.channels.keys())
-    n_pts = spec.metadata.get("n_points")
-    bias = _f(spec.metadata.get("bias_mv"))
-    if bias is not None:
-        bias /= 1000.0  # mV → V
-    comment = spec.metadata.get("title") or None
-    acq_dt = spec.metadata.get("acquisition_datetime") or None
+    from probeflow.spec_io import read_spec_metadata
+    meta = read_spec_metadata(path)
+    n_pts = meta.metadata.get("n_points")
     extra: dict[str, Any] = {
-        "sweep_type": spec.metadata.get("sweep_type"),
+        "sweep_type": meta.metadata.get("sweep_type"),
         "n_points": n_pts,
-        "position_m": spec.position,
-        "spec_freq_hz": _f(spec.metadata.get("spec_freq_hz")),
-        "bias_mv": _f(spec.metadata.get("bias_mv")),
+        "position_m": meta.position,
+        "spec_freq_hz": _f(meta.metadata.get("spec_freq_hz")),
+        "bias_mv": _f(meta.metadata.get("bias_mv")),
     }
     return ProbeFlowItem(
         path=path,
         display_name=path.stem,
         source_format=source_format,
         item_type="spectrum",
-        channels=ch_names,
-        bias=bias,
-        comment=comment,
-        acquisition_datetime=acq_dt,
+        channels=meta.channels,
+        units=meta.units,
+        bias=meta.bias,
+        comment=meta.comment,
+        acquisition_datetime=meta.acquisition_datetime,
         mtime_ns=mtime_ns,
         size_bytes=size_bytes,
         metadata=extra,

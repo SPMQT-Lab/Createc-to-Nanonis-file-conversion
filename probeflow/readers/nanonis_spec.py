@@ -20,7 +20,7 @@ from typing import Optional, Union
 
 import numpy as np
 
-from probeflow.spec_io import SpecData
+from probeflow.spec_io import SpecData, SpecMetadata
 
 log = logging.getLogger(__name__)
 
@@ -217,6 +217,107 @@ def read_nanonis_spec(path: Union[str, Path]) -> SpecData:
     )
 
 
+def read_nanonis_spec_metadata(path: Union[str, Path]) -> SpecMetadata:
+    """Read Nanonis spectroscopy metadata without loading numeric arrays."""
+    path = Path(path)
+    hdr, columns, n_points = _read_nanonis_spec_header_summary(path)
+    if n_points <= 0:
+        raise ValueError(f"{path.name}: no data rows after [DATA]")
+
+    experiment = hdr.get("Experiment", "").strip().lower()
+    sweep_type = _SWEEP_TYPE_MAP.get(experiment, experiment.replace(" ", "_") or "unknown")
+
+    channel_names = tuple(name for _raw, name, _unit in columns)
+    units = tuple(unit for _raw, _name, unit in columns)
+    pos_x_m = _parse_header_float(hdr, "X (m)")
+    pos_y_m = _parse_header_float(hdr, "Y (m)")
+    bias = _parse_optional_header_float(hdr, "Bias>Bias (V)")
+    comment = hdr.get("Experiment", "").strip() or None
+    acquisition_datetime = (
+        hdr.get("Saved Date", "").strip()
+        or hdr.get("Date", "").strip()
+        or None
+    )
+    metadata = {
+        "filename": path.name,
+        "sweep_type": sweep_type,
+        "n_points": n_points,
+        "title": comment or "",
+        "experiment": hdr.get("Experiment", ""),
+    }
+    return SpecMetadata(
+        path=path,
+        source_format="nanonis_dat_spectrum",
+        channels=channel_names,
+        units=units,
+        position=(pos_x_m, pos_y_m),
+        metadata=metadata,
+        bias=bias,
+        comment=comment,
+        acquisition_datetime=acquisition_datetime,
+        raw_header=hdr,
+    )
+
+
+def _read_nanonis_spec_header_summary(
+    path: Path,
+) -> tuple[dict[str, str], list[tuple[str, str, str]], int]:
+    """Stream header, column names, and row count from a Nanonis .dat file."""
+    hdr: dict[str, str] = {}
+    columns: list[tuple[str, str, str]] = []
+    n_points = 0
+    in_data = False
+    have_column_header = False
+
+    with path.open("r", encoding="latin-1", errors="replace") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not in_data:
+                if stripped == "[DATA]":
+                    in_data = True
+                    continue
+                if "\t" not in line:
+                    continue
+                key, _, rest = line.partition("\t")
+                value = rest.split("\t")[0] if rest else ""
+                key = key.strip()
+                if key:
+                    hdr[key] = value.strip()
+                continue
+
+            if not have_column_header:
+                columns = _parse_column_header(line)
+                if not columns:
+                    raise ValueError(f"{path.name}: empty column header")
+                have_column_header = True
+                continue
+
+            if stripped:
+                n_points += 1
+
+    if not in_data:
+        raise ValueError(f"{path.name}: missing [DATA] marker")
+    if not have_column_header:
+        raise ValueError(f"{path.name}: no column header after [DATA]")
+    return hdr, columns, n_points
+
+
+def _parse_column_header(col_header: str) -> list[tuple[str, str, str]]:
+    columns: list[tuple[str, str, str]] = []
+    for raw in col_header.split("\t"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        m = _COLUMN_RE.match(raw)
+        if m:
+            name = m.group(1).strip()
+            unit = m.group(2).strip()
+        else:
+            name, unit = raw, ""
+        columns.append((raw, name, unit))
+    return columns
+
+
 def _parse_header_float(hdr: dict[str, str], key: str) -> float:
     raw = hdr.get(key, "").strip()
     if not raw:
@@ -225,3 +326,13 @@ def _parse_header_float(hdr: dict[str, str], key: str) -> float:
         return float(raw)
     except ValueError:
         return 0.0
+
+
+def _parse_optional_header_float(hdr: dict[str, str], key: str) -> Optional[float]:
+    raw = hdr.get(key, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None

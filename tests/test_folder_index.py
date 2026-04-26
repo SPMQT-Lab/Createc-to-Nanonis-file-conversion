@@ -15,6 +15,7 @@ _CREATEC_STEP    = TESTDATA / "createc_scan_step_20nm.dat"
 _CREATEC_TERRACE = TESTDATA / "createc_scan_terrace_109nm.dat"
 _NANONIS_SXM     = TESTDATA / "sxm_moire_10nm.sxm"
 _CREATEC_VERT    = TESTDATA / "createc_ivt_telegraph_300mv_a.VERT"
+_NANONIS_SPEC    = TESTDATA / "nanonis_sts_15mv.dat"
 
 _CREATEC_SCAN_SHAPES = {(64, 63), (256, 255), (330, 511), (512, 511), (1024, 1023)}
 
@@ -200,3 +201,20 @@ class TestProbeFlowItemContract:
         items = index_folder(TESTDATA)
         spectra = [it for it in items if it.item_type == "spectrum"]
         assert len(spectra) >= 3  # at least the three .VERT files
+
+    def test_spectrum_indexing_does_not_call_full_reader(self, tmp_path, monkeypatch):
+        shutil.copy(_CREATEC_VERT, tmp_path / _CREATEC_VERT.name)
+        shutil.copy(_NANONIS_SPEC, tmp_path / _NANONIS_SPEC.name)
+
+        def fail_full_reader(*_args, **_kwargs):
+            raise AssertionError("index_folder should use read_spec_metadata")
+
+        monkeypatch.setattr("probeflow.spec_io.read_spec_file", fail_full_reader)
+        items = index_folder(tmp_path)
+        spectra = [it for it in items if it.item_type == "spectrum"]
+        assert len(spectra) == 2
+        assert all(it.load_error is None for it in spectra)
+        assert {it.source_format for it in spectra} == {
+            "createc_vert",
+            "nanonis_dat_spectrum",
+        }

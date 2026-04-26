@@ -66,6 +66,27 @@ class SpecData:
         return f"SpecData({fname!r}, {sw}, {n} pts)"
 
 
+@dataclass(frozen=True)
+class SpecMetadata:
+    """Lightweight spectroscopy summary for folder indexing.
+
+    Unlike :class:`SpecData`, this object never contains full numeric channel
+    arrays. Readers may stream file rows to count points, but should not build
+    array payloads just to populate folder-browser metadata.
+    """
+
+    path: Path
+    source_format: str
+    channels: tuple[str, ...]
+    units: tuple[str, ...]
+    position: tuple[float, float]
+    metadata: dict[str, Any]
+    bias: float | None = None
+    comment: str | None = None
+    acquisition_datetime: str | None = None
+    raw_header: dict[str, str] = field(default_factory=dict)
+
+
 def parse_spec_header(path: Union[str, Path]) -> dict[str, str]:
     """Read only the header of a .VERT file and return it as a dictionary.
 
@@ -123,6 +144,111 @@ def read_spec_file(
         from probeflow.readers.nanonis_spec import read_nanonis_spec
         return read_nanonis_spec(path)
     return _read_createc_vert(path, time_trace_threshold_mv=time_trace_threshold_mv)
+
+
+def read_spec_metadata(
+    path: Union[str, Path],
+    *,
+    time_trace_threshold_mv: float = _TIME_TRACE_THRESHOLD_MV,
+) -> SpecMetadata:
+    """Read spectroscopy metadata without loading full numeric arrays."""
+    from probeflow.file_type import FileType, sniff_file_type
+
+    path = Path(path)
+    ft = sniff_file_type(path)
+    if ft == FileType.NANONIS_SPEC:
+        from probeflow.readers.nanonis_spec import read_nanonis_spec_metadata
+        return read_nanonis_spec_metadata(path)
+    if ft == FileType.CREATEC_SPEC:
+        return _read_createc_vert_metadata(
+            path,
+            time_trace_threshold_mv=time_trace_threshold_mv,
+        )
+    raise ValueError(f"{path.name}: not a recognised spectroscopy file")
+
+
+def _read_createc_vert_metadata(
+    path: Path,
+    *,
+    time_trace_threshold_mv: float = _TIME_TRACE_THRESHOLD_MV,
+) -> SpecMetadata:
+    """Read Createc .VERT metadata without materialising channel arrays."""
+    hdr = parse_spec_header(path)
+    n_points, bias_min_mv, bias_max_mv = _summarise_createc_vert_rows(path)
+    if n_points <= 0:
+        raise ValueError(f"{path.name}: no data rows found after DATA marker")
+
+    bias_for_type = np.array([bias_min_mv, bias_max_mv], dtype=np.float64)
+    is_time_trace = _detect_time_trace(hdr, bias_for_type, time_trace_threshold_mv)
+
+    dac_to_a_xy = _f(find_hdr(hdr, "Dacto[A]xy", "1"), 1.0)
+    ox_dac = _f(find_hdr(hdr, "OffsetX", "0"), 0.0)
+    oy_dac = _f(find_hdr(hdr, "OffsetY", "0"), 0.0)
+    pos_x_m = ox_dac * dac_to_a_xy * 1e-10
+    pos_y_m = oy_dac * dac_to_a_xy * 1e-10
+
+    bias_raw = find_hdr(hdr, "BiasVolt.[mV]", None) or find_hdr(hdr, "Biasvolt[mV]", None)
+    bias_mv = _f(bias_raw)
+    comment = hdr.get("Titel", "").strip() or None
+    metadata: dict[str, Any] = {
+        "filename": path.name,
+        "bias_mv": float(bias_mv) if bias_mv is not None else None,
+        "spec_freq_hz": _f(find_hdr(hdr, "SpecFreq", "1000"), 1000.0),
+        "gain_pre_exp": float(_f(find_hdr(hdr, "GainPre 10^", "9"), 9.0)),
+        "fb_log": hdr.get("FBLog", "0").strip() == "1",
+        "sweep_type": "time_trace" if is_time_trace else "bias_sweep",
+        "n_points": n_points,
+        "title": comment or "",
+    }
+    return SpecMetadata(
+        path=path,
+        source_format="createc_vert",
+        channels=("I", "Z", "V"),
+        units=("A", "m", "V"),
+        position=(pos_x_m, pos_y_m),
+        metadata=metadata,
+        bias=(bias_mv / 1000.0) if bias_mv is not None else None,
+        comment=comment,
+        acquisition_datetime=None,
+        raw_header=hdr,
+    )
+
+
+def _summarise_createc_vert_rows(path: Path) -> tuple[int, float, float]:
+    """Return ``(n_points, min_bias_mv, max_bias_mv)`` by streaming data rows."""
+    in_data = False
+    skipped_params = False
+    n_points = 0
+    bias_min = float("inf")
+    bias_max = float("-inf")
+
+    with path.open("r", encoding="latin-1", errors="replace") as fh:
+        for line in fh:
+            stripped = line.strip()
+            if not in_data:
+                if stripped == "DATA":
+                    in_data = True
+                continue
+            if not skipped_params:
+                skipped_params = True
+                continue
+            if not stripped:
+                continue
+            cols = stripped.split()
+            if len(cols) < 2:
+                continue
+            bias = _f(cols[1])
+            if bias is None:
+                continue
+            n_points += 1
+            bias_min = min(bias_min, bias)
+            bias_max = max(bias_max, bias)
+
+    if not in_data:
+        raise ValueError(f"{path.name}: missing DATA marker")
+    if n_points == 0:
+        return 0, 0.0, 0.0
+    return n_points, bias_min, bias_max
 
 
 def _read_createc_vert(
