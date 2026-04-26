@@ -1431,6 +1431,207 @@ class _ZoomLabel(QLabel):
             super().wheelEvent(event)
 
 
+class ProcessingControlPanel(QWidget):
+    """Internal processing controls shared by Browse and Viewer."""
+
+    QUICK_KEYS = ("align_rows",)
+
+    def __init__(self, mode: str, parent=None):
+        super().__init__(parent)
+        if mode not in ("browse_quick", "viewer_full"):
+            raise ValueError(f"Unknown processing panel mode: {mode}")
+        self._mode = mode
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 2, 0, 2)
+        lay.setSpacing(4)
+
+        def _combo_row(label: str, items: list[str]) -> QComboBox:
+            row = QHBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFont(QFont("Helvetica", 8))
+            lbl.setFixedWidth(90)
+            cb = QComboBox()
+            cb.addItems(items)
+            cb.setFont(QFont("Helvetica", 8))
+            row.addWidget(lbl)
+            row.addWidget(cb, 1)
+            lay.addLayout(row)
+            return cb
+
+        def _sub_slider(label: str, mn: int, mx: int, init: int,
+                        fmt="{v}") -> tuple[QWidget, QSlider, QLabel]:
+            w = QWidget()
+            rl = QHBoxLayout(w)
+            rl.setContentsMargins(0, 0, 0, 0)
+            lbl = QLabel(label)
+            lbl.setFont(QFont("Helvetica", 8))
+            lbl.setFixedWidth(56)
+            sl = QSlider(Qt.Horizontal)
+            sl.setRange(mn, mx)
+            sl.setValue(init)
+            val_lbl = QLabel(fmt.format(v=init))
+            val_lbl.setFont(QFont("Helvetica", 8))
+            val_lbl.setFixedWidth(30)
+            sl.valueChanged.connect(
+                lambda v, vl=val_lbl, f=fmt: vl.setText(f.format(v=v)))
+            rl.addWidget(lbl)
+            rl.addWidget(sl, 1)
+            rl.addWidget(val_lbl)
+            return w, sl, val_lbl
+
+        line_lbl = QLabel("Line corrections")
+        line_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        line_lbl.setAlignment(Qt.AlignCenter)
+        lay.addWidget(line_lbl)
+
+        self._align_combo = _combo_row("Align rows:", ["None", "Median", "Mean"])
+
+        if self._mode == "browse_quick":
+            lay.addStretch()
+            return
+
+        bg_lbl = QLabel("Background subtraction")
+        bg_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        bg_lbl.setAlignment(Qt.AlignCenter)
+        lay.addWidget(bg_lbl)
+
+        self._bg_combo = _combo_row(
+            "Background:",
+            ["None", "Plane", "Quadratic", "Cubic", "Quartic"],
+        )
+        self._bg_step_cb = QCheckBox("Step-edge tolerant (mask high-grad)")
+        self._bg_step_cb.setFont(QFont("Helvetica", 8))
+        lay.addWidget(self._bg_step_cb)
+
+        self._facet_cb = QCheckBox("Facet level (flat-terrace ref)")
+        self._facet_cb.setFont(QFont("Helvetica", 8))
+        lay.addWidget(self._facet_cb)
+
+        smooth_lbl = QLabel("Smoothing / Edge detection")
+        smooth_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        smooth_lbl.setAlignment(Qt.AlignCenter)
+        lay.addWidget(smooth_lbl)
+
+        self._smooth_combo = _combo_row("Smooth:", ["None", "Gaussian"])
+        self._smooth_sigma_w, self._smooth_sigma_sl, _ = _sub_slider(
+            "sigma (px):", 1, 20, 1, "{v}")
+        lay.addWidget(self._smooth_sigma_w)
+        self._smooth_sigma_w.setVisible(False)
+        self._smooth_combo.currentIndexChanged.connect(
+            lambda i: self._smooth_sigma_w.setVisible(i != 0))
+
+        self._edge_combo = _combo_row("Edge detect:", ["None", "Laplacian", "LoG", "DoG"])
+        self._edge_sigma_w, self._edge_sigma_sl, _ = _sub_slider(
+            "sigma (px):", 1, 20, 1, "{v}")
+        lay.addWidget(self._edge_sigma_w)
+        self._edge_sigma_w.setVisible(False)
+        self._edge_combo.currentIndexChanged.connect(
+            lambda i: self._edge_sigma_w.setVisible(i != 0))
+
+        fft_lbl = QLabel("FFT filter")
+        fft_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        fft_lbl.setAlignment(Qt.AlignCenter)
+        lay.addWidget(fft_lbl)
+
+        self._fft_combo = _combo_row("FFT filter:", ["None", "Low-pass", "High-pass"])
+        self._fft_cutoff_widget, self._fft_sl, _ = _sub_slider(
+            "Cutoff:", 1, 50, 10, "{v}%")
+        lay.addWidget(self._fft_cutoff_widget)
+        self._fft_cutoff_widget.setVisible(False)
+        self._fft_combo.currentIndexChanged.connect(
+            lambda i: self._fft_cutoff_widget.setVisible(i != 0))
+
+        self._fft_soft_cb = QCheckBox("Soft border (Tukey taper)")
+        self._fft_soft_cb.setFont(QFont("Helvetica", 8))
+        lay.addWidget(self._fft_soft_cb)
+
+        undistort_lbl = QLabel("Linear undistort (drift)")
+        undistort_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        undistort_lbl.setAlignment(Qt.AlignCenter)
+        lay.addWidget(undistort_lbl)
+
+        self._undistort_shear_w, self._undistort_shear_sl, _ = _sub_slider(
+            "Shear x:", -20, 20, 0, "{v}px")
+        lay.addWidget(self._undistort_shear_w)
+        self._undistort_scale_w, self._undistort_scale_sl, _ = _sub_slider(
+            "Scale y:", 80, 120, 100, "{v}%")
+        lay.addWidget(self._undistort_scale_w)
+
+    def state(self) -> dict:
+        align_map = {0: None, 1: "median", 2: "mean"}
+        cfg = {
+            "align_rows": align_map[self._align_combo.currentIndex()],
+        }
+        if self._mode == "browse_quick":
+            return {k: cfg[k] for k in self.QUICK_KEYS}
+
+        bg_map = {0: None, 1: 1, 2: 2, 3: 3, 4: 4}
+        fft_map = {0: None, 1: "low_pass", 2: "high_pass"}
+        edge_map = {0: None, 1: "laplacian", 2: "log", 3: "dog"}
+        smooth_i = self._smooth_combo.currentIndex()
+        edge_i = self._edge_combo.currentIndex()
+        fft_idx = self._fft_combo.currentIndex()
+        shear_x = float(self._undistort_shear_sl.value())
+        scale_y = self._undistort_scale_sl.value() / 100.0
+        cfg.update({
+            "bg_order": bg_map[self._bg_combo.currentIndex()],
+            "bg_step_tolerance": self._bg_step_cb.isChecked(),
+            "facet_level": self._facet_cb.isChecked(),
+            "smooth_sigma": self._smooth_sigma_sl.value() if smooth_i != 0 else None,
+            "edge_method": edge_map[edge_i],
+            "edge_sigma": self._edge_sigma_sl.value(),
+            "edge_sigma2": self._edge_sigma_sl.value() * 2,
+            "fft_mode": fft_map[fft_idx],
+            "fft_cutoff": self._fft_sl.value() / 100.0,
+            "fft_window": "hanning",
+            "fft_soft_border": self._fft_soft_cb.isChecked(),
+            "fft_soft_mode": fft_map.get(fft_idx) or "low_pass",
+            "fft_soft_cutoff": self._fft_sl.value() / 100.0,
+            "fft_soft_border_frac": 0.12,
+            "linear_undistort": (shear_x != 0.0 or scale_y != 1.0),
+            "undistort_shear_x": shear_x,
+            "undistort_scale_y": scale_y,
+        })
+        return cfg
+
+    def set_state(self, state: dict | None) -> None:
+        state = state or {}
+        self._align_combo.setCurrentIndex(
+            {None: 0, "median": 1, "mean": 2}.get(state.get("align_rows"), 0))
+        if self._mode == "browse_quick":
+            return
+
+        self._bg_combo.setCurrentIndex(
+            {None: 0, 1: 1, 2: 2, 3: 3, 4: 4}.get(state.get("bg_order"), 0))
+        self._bg_step_cb.setChecked(bool(state.get("bg_step_tolerance", False)))
+        self._facet_cb.setChecked(bool(state.get("facet_level", False)))
+
+        sigma = state.get("smooth_sigma")
+        if sigma:
+            self._smooth_combo.setCurrentIndex(1)
+            self._smooth_sigma_sl.setValue(int(sigma))
+        else:
+            self._smooth_combo.setCurrentIndex(0)
+
+        edge = state.get("edge_method")
+        self._edge_combo.setCurrentIndex(
+            {None: 0, "laplacian": 1, "log": 2, "dog": 3}.get(edge, 0))
+        self._edge_sigma_sl.setValue(int(state.get("edge_sigma", 1)))
+
+        fft_mode = state.get("fft_mode")
+        self._fft_combo.setCurrentIndex(
+            {None: 0, "low_pass": 1, "high_pass": 2}.get(fft_mode, 0))
+        self._fft_sl.setValue(int(round(float(state.get("fft_cutoff", 0.10)) * 100)))
+        self._fft_soft_cb.setChecked(bool(state.get("fft_soft_border", False)))
+
+        self._undistort_shear_sl.setValue(int(state.get("undistort_shear_x", 0)))
+        self._undistort_scale_sl.setValue(
+            int(round(float(state.get("undistort_scale_y", 1.0)) * 100)))
+
+
 class ImageViewerDialog(QDialog):
     """Double-click viewer with scroll/zoom, histogram, clip sliders, processing, export."""
 
@@ -1462,22 +1663,8 @@ class ImageViewerDialog(QDialog):
         self._scan_format: str = ""
 
         self._build()
-        self._sync_qproc_from_state()
+        self._processing_panel.set_state(self._processing)
         self._load_current()
-
-    def _sync_qproc_from_state(self):
-        """Set quick-processing widgets to reflect the initial processing dict."""
-        align = self._processing.get('align_rows')
-        self._qalign_cb.setCurrentIndex(
-            {None: 0, 'median': 1, 'mean': 2}.get(align, 0))
-        bg_order = self._processing.get('bg_order')
-        self._qbg_cb.setCurrentIndex({None: 0, 1: 1, 2: 2}.get(bg_order, 0))
-        sigma = self._processing.get('smooth_sigma')
-        if sigma:
-            self._qsmooth_cb.setCurrentIndex(1)
-            self._qsmooth_sl.setValue(int(sigma))
-        else:
-            self._qsmooth_cb.setCurrentIndex(0)
 
     # ── Build ──────────────────────────────────────────────────────────────────
     def _build(self):
@@ -1629,70 +1816,36 @@ class ImageViewerDialog(QDialog):
 
         right_lay.addWidget(_sep())
 
-        # quick processing
-        proc_toggle = QPushButton("[+] Quick Processing")
+        # processing
+        proc_toggle = QPushButton("[+] Processing")
         proc_toggle.setFlat(True)
         proc_toggle.setFont(QFont("Helvetica", 9, QFont.Bold))
         proc_toggle.setCursor(QCursor(Qt.PointingHandCursor))
         right_lay.addWidget(proc_toggle)
 
-        self._qproc_widget = QWidget()
-        qp_lay = QVBoxLayout(self._qproc_widget)
-        qp_lay.setContentsMargins(2, 2, 0, 2)
-        qp_lay.setSpacing(4)
+        self._processing_widget = QWidget()
+        processing_lay = QVBoxLayout(self._processing_widget)
+        processing_lay.setContentsMargins(2, 2, 0, 2)
+        processing_lay.setSpacing(4)
 
-        def _qcombo(label, items):
-            row = QHBoxLayout()
-            lb = QLabel(label)
-            lb.setFont(QFont("Helvetica", 8))
-            lb.setFixedWidth(68)
-            cb = QComboBox()
-            cb.addItems(items)
-            cb.setFont(QFont("Helvetica", 8))
-            row.addWidget(lb)
-            row.addWidget(cb, 1)
-            qp_lay.addLayout(row)
-            return cb
+        self._processing_panel = ProcessingControlPanel("viewer_full")
+        processing_lay.addWidget(self._processing_panel)
 
-        self._qalign_cb  = _qcombo("Align rows:", ["None", "Median", "Mean"])
-        self._qbg_cb     = _qcombo("Background:", ["None", "Plane", "Quadratic"])
-        self._qsmooth_cb = _qcombo("Smooth:", ["None", "Gaussian"])
+        proc_apply_btn = QPushButton("Apply processing")
+        proc_apply_btn.setFont(QFont("Helvetica", 8))
+        proc_apply_btn.setFixedHeight(24)
+        proc_apply_btn.setObjectName("accentBtn")
+        proc_apply_btn.clicked.connect(self._on_apply_processing)
+        processing_lay.addWidget(proc_apply_btn)
 
-        smooth_row = QHBoxLayout()
-        sm_lbl = QLabel("σ (px):")
-        sm_lbl.setFont(QFont("Helvetica", 8))
-        sm_lbl.setFixedWidth(40)
-        self._qsmooth_sl  = QSlider(Qt.Horizontal)
-        self._qsmooth_sl.setRange(1, 10)
-        self._qsmooth_sl.setValue(1)
-        self._qsmooth_vl  = QLabel("1")
-        self._qsmooth_vl.setFont(QFont("Helvetica", 8))
-        self._qsmooth_vl.setFixedWidth(20)
-        self._qsmooth_sl.valueChanged.connect(
-            lambda v: self._qsmooth_vl.setText(str(v)))
-        smooth_row.addWidget(sm_lbl)
-        smooth_row.addWidget(self._qsmooth_sl, 1)
-        smooth_row.addWidget(self._qsmooth_vl)
-        qp_lay.addLayout(smooth_row)
-        self._qsmooth_cb.currentIndexChanged.connect(
-            lambda i: self._qsmooth_sl.setEnabled(i != 0))
-        self._qsmooth_sl.setEnabled(False)
-
-        qproc_apply_btn = QPushButton("Apply quick processing")
-        qproc_apply_btn.setFont(QFont("Helvetica", 8))
-        qproc_apply_btn.setFixedHeight(24)
-        qproc_apply_btn.setObjectName("accentBtn")
-        qproc_apply_btn.clicked.connect(self._on_apply_qproc)
-        qp_lay.addWidget(qproc_apply_btn)
-
-        self._qproc_widget.setVisible(False)
-        right_lay.addWidget(self._qproc_widget)
+        self._processing_widget.setVisible(False)
+        right_lay.addWidget(self._processing_widget)
 
         proc_toggle.clicked.connect(lambda: (
-            self._qproc_widget.setVisible(not self._qproc_widget.isVisible()),
+            self._processing_widget.setVisible(not self._processing_widget.isVisible()),
             proc_toggle.setText(
-                "[-] Quick Processing" if self._qproc_widget.isVisible()
-                else "[+] Quick Processing")
+                "[-] Processing" if self._processing_widget.isVisible()
+                else "[+] Processing")
         ))
 
         right_lay.addWidget(_sep())
@@ -2112,16 +2265,14 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.set_source(pixmap)
 
     # ── Controls ───────────────────────────────────────────────────────────────
-    def _on_apply_qproc(self):
-        align_map = {0: None, 1: 'median', 2: 'mean'}
-        bg_map    = {0: None, 1: 1, 2: 2}
-        smooth_i  = self._qsmooth_cb.currentIndex()
-        # merge into existing processing so keys set by the main panel survive
-        self._processing.update({
-            'align_rows':   align_map[self._qalign_cb.currentIndex()],
-            'bg_order':     bg_map[self._qbg_cb.currentIndex()],
-            'smooth_sigma': self._qsmooth_sl.value() if smooth_i != 0 else None,
-        })
+    def _on_apply_processing(self):
+        set_zero = {
+            key: self._processing[key]
+            for key in ("set_zero_xy", "set_zero_patch")
+            if key in self._processing
+        }
+        self._processing = self._processing_panel.state()
+        self._processing.update(set_zero)
         self._load_current()
 
     def _on_save_png(self):
@@ -2309,8 +2460,8 @@ class BrowseToolPanel(QWidget):
         self._high_slider = _slider_row("High:", cfg.get("clip_high", 99.0), 80, 100, self._on_high_changed)
         lay.addWidget(_sep())
 
-        # ── Processing (collapsible) ───────────────────────────────────────────
-        self._proc_toggle = QPushButton("[+] Processing")
+        # ── Quick corrections (collapsible) ───────────────────────────────────
+        self._proc_toggle = QPushButton("[+] Quick corrections")
         self._proc_toggle.setFlat(True)
         self._proc_toggle.setFont(QFont("Helvetica", 9, QFont.Bold))
         self._proc_toggle.setCursor(QCursor(Qt.PointingHandCursor))
@@ -2322,167 +2473,8 @@ class BrowseToolPanel(QWidget):
         proc_lay.setContentsMargins(4, 2, 0, 2)
         proc_lay.setSpacing(4)
 
-        # helper: combo row
-        def _combo_row(label: str, items: list[str]) -> QComboBox:
-            row = QHBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(90)
-            cb = QComboBox()
-            cb.addItems(items)
-            cb.setFont(QFont("Helvetica", 8))
-            row.addWidget(lbl)
-            row.addWidget(cb, 1)
-            proc_lay.addLayout(row)
-            return cb
-
-        # helper: inline slider sub-widget
-        def _sub_slider(label: str, mn: int, mx: int, init: int, fmt="{v}") -> tuple[QWidget, QSlider, QLabel]:
-            w = QWidget()
-            rl = QHBoxLayout(w)
-            rl.setContentsMargins(0, 0, 0, 0)
-            lbl = QLabel(label)
-            lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(56)
-            sl = QSlider(Qt.Horizontal)
-            sl.setRange(mn, mx)
-            sl.setValue(init)
-            val_lbl = QLabel(fmt.format(v=init))
-            val_lbl.setFont(QFont("Helvetica", 8))
-            val_lbl.setFixedWidth(30)
-            sl.valueChanged.connect(lambda v, vl=val_lbl, f=fmt: vl.setText(f.format(v=v)))
-            rl.addWidget(lbl)
-            rl.addWidget(sl, 1)
-            rl.addWidget(val_lbl)
-            return w, sl, val_lbl
-
-        # ── Section: Line corrections ──────────────────────────────────────────
-        sec1 = QLabel("— Line corrections —")
-        sec1.setFont(QFont("Helvetica", 7))
-        sec1.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec1)
-
-        self._rbl_cb = QCheckBox("Remove bad lines (MAD)")
-        self._rbl_cb.setFont(QFont("Helvetica", 8))
-        proc_lay.addWidget(self._rbl_cb)
-
-        self._align_combo = _combo_row("Align rows:", ["None", "Median", "Mean", "Linear"])
-
-        # ── Section: Background ────────────────────────────────────────────────
-        sec2 = QLabel("— Background subtraction —")
-        sec2.setFont(QFont("Helvetica", 7))
-        sec2.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec2)
-
-        self._bg_combo = _combo_row(
-            "Background:",
-            ["None", "Plane", "Quadratic", "Cubic", "Quartic"],
-        )
-
-        self._bg_step_cb = QCheckBox("Step-edge tolerant (mask high-grad)")
-        self._bg_step_cb.setFont(QFont("Helvetica", 8))
-        proc_lay.addWidget(self._bg_step_cb)
-
-        self._facet_cb = QCheckBox("Facet level (flat-terrace ref)")
-        self._facet_cb.setFont(QFont("Helvetica", 8))
-        proc_lay.addWidget(self._facet_cb)
-
-        # ── Section: Smoothing / Edge ──────────────────────────────────────────
-        sec3 = QLabel("— Smoothing / Edge detection —")
-        sec3.setFont(QFont("Helvetica", 7))
-        sec3.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec3)
-
-        self._smooth_combo = _combo_row("Smooth:", ["None", "Gaussian"])
-        self._smooth_sigma_w, self._smooth_sigma_sl, _ = _sub_slider(
-            "σ (px):", 1, 20, 1, "{v}")
-        proc_lay.addWidget(self._smooth_sigma_w)
-        self._smooth_sigma_w.setVisible(False)
-        self._smooth_combo.currentIndexChanged.connect(
-            lambda i: self._smooth_sigma_w.setVisible(i != 0))
-
-        self._edge_combo = _combo_row("Edge detect:", ["None", "Laplacian", "LoG", "DoG"])
-        self._edge_sigma_w, self._edge_sigma_sl, _ = _sub_slider(
-            "σ (px):", 1, 20, 1, "{v}")
-        proc_lay.addWidget(self._edge_sigma_w)
-        self._edge_sigma_w.setVisible(False)
-        self._edge_combo.currentIndexChanged.connect(
-            lambda i: self._edge_sigma_w.setVisible(i != 0))
-
-        # ── Section: FFT filter ────────────────────────────────────────────────
-        sec4 = QLabel("— FFT filter —")
-        sec4.setFont(QFont("Helvetica", 7))
-        sec4.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec4)
-
-        self._fft_combo = _combo_row("FFT filter:", ["None", "Low-pass", "High-pass"])
-        self._fft_combo.currentIndexChanged.connect(self._on_fft_mode_changed)
-
-        self._fft_cutoff_widget, self._fft_sl, self._fft_cutoff_lbl = _sub_slider(
-            "Cutoff:", 1, 50, 10, "{v}%")
-        proc_lay.addWidget(self._fft_cutoff_widget)
-        self._fft_cutoff_widget.setVisible(False)
-
-        self._fft_soft_cb = QCheckBox("Soft border (Tukey taper)")
-        self._fft_soft_cb.setFont(QFont("Helvetica", 8))
-        proc_lay.addWidget(self._fft_soft_cb)
-
-        # ── Section: Drift / linear undistort ─────────────────────────────────
-        sec_un = QLabel("— Linear undistort (drift) —")
-        sec_un.setFont(QFont("Helvetica", 7))
-        sec_un.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec_un)
-
-        self._undistort_shear_w, self._undistort_shear_sl, _ = _sub_slider(
-            "Shear x:", -20, 20, 0, "{v}px")
-        proc_lay.addWidget(self._undistort_shear_w)
-        self._undistort_scale_w, self._undistort_scale_sl, _ = _sub_slider(
-            "Scale y:", 80, 120, 100, "{v}%")
-        proc_lay.addWidget(self._undistort_scale_w)
-
-        # ── Section: Grain detection ───────────────────────────────────────────
-        sec5 = QLabel("— Grain detection —")
-        sec5.setFont(QFont("Helvetica", 7))
-        sec5.setAlignment(Qt.AlignCenter)
-        proc_lay.addWidget(sec5)
-
-        self._grain_cb = QCheckBox("Detect grains / islands")
-        self._grain_cb.setFont(QFont("Helvetica", 8))
-        proc_lay.addWidget(self._grain_cb)
-
-        self._grain_opts_w = QWidget()
-        grain_opts_lay = QVBoxLayout(self._grain_opts_w)
-        grain_opts_lay.setContentsMargins(4, 0, 0, 0)
-        grain_opts_lay.setSpacing(2)
-
-        thresh_row = QHBoxLayout()
-        thresh_lbl = QLabel("Threshold:")
-        thresh_lbl.setFont(QFont("Helvetica", 8))
-        thresh_lbl.setFixedWidth(64)
-        self._grain_thresh_sl = QSlider(Qt.Horizontal)
-        self._grain_thresh_sl.setRange(10, 90)
-        self._grain_thresh_sl.setValue(50)
-        self._grain_thresh_lbl = QLabel("50%")
-        self._grain_thresh_lbl.setFont(QFont("Helvetica", 8))
-        self._grain_thresh_lbl.setFixedWidth(30)
-        self._grain_thresh_sl.valueChanged.connect(
-            lambda v: self._grain_thresh_lbl.setText(f"{v}%"))
-        thresh_row.addWidget(thresh_lbl)
-        thresh_row.addWidget(self._grain_thresh_sl, 1)
-        thresh_row.addWidget(self._grain_thresh_lbl)
-        grain_opts_lay.addLayout(thresh_row)
-
-        self._grain_above_rb = QRadioButton("Islands (above threshold)")
-        self._grain_below_rb = QRadioButton("Holes (below threshold)")
-        self._grain_above_rb.setFont(QFont("Helvetica", 8))
-        self._grain_below_rb.setFont(QFont("Helvetica", 8))
-        self._grain_above_rb.setChecked(True)
-        grain_opts_lay.addWidget(self._grain_above_rb)
-        grain_opts_lay.addWidget(self._grain_below_rb)
-
-        proc_lay.addWidget(self._grain_opts_w)
-        self._grain_opts_w.setVisible(False)
-        self._grain_cb.toggled.connect(self._grain_opts_w.setVisible)
+        self._processing_panel = ProcessingControlPanel("browse_quick")
+        proc_lay.addWidget(self._processing_panel)
 
         # ── Apply + Auto-clip + Measure ────────────────────────────────────────
         proc_lay.addWidget(_sep())
@@ -2494,7 +2486,7 @@ class BrowseToolPanel(QWidget):
         self._autoclip_btn.clicked.connect(self.autoclip_requested.emit)
         proc_lay.addWidget(self._autoclip_btn)
 
-        self._proc_apply_btn = QPushButton("Apply processing to selection")
+        self._proc_apply_btn = QPushButton("Apply to selected thumbnails")
         self._proc_apply_btn.setFont(QFont("Helvetica", 8))
         self._proc_apply_btn.setFixedHeight(26)
         self._proc_apply_btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -2502,7 +2494,7 @@ class BrowseToolPanel(QWidget):
         self._proc_apply_btn.clicked.connect(self._on_proc_apply)
         proc_lay.addWidget(self._proc_apply_btn)
 
-        self._undo_btn = QPushButton("↩ Undo last processing")
+        self._undo_btn = QPushButton("↩ Undo last thumbnail change")
         self._undo_btn.setFont(QFont("Helvetica", 8))
         self._undo_btn.setFixedHeight(26)
         self._undo_btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -2557,47 +2549,11 @@ class BrowseToolPanel(QWidget):
     def _toggle_proc(self):
         vis = not self._proc_widget.isVisible()
         self._proc_widget.setVisible(vis)
-        self._proc_toggle.setText("[-] Processing" if vis else "[+] Processing")
-
-    def _on_fft_mode_changed(self, idx: int):
-        self._fft_cutoff_widget.setVisible(idx != 0)
+        self._proc_toggle.setText(
+            "[-] Quick corrections" if vis else "[+] Quick corrections")
 
     def _on_proc_apply(self):
-        align_map = {0: None, 1: 'median', 2: 'mean', 3: 'linear'}
-        bg_map    = {0: None, 1: 1, 2: 2, 3: 3, 4: 4}
-        fft_map   = {0: None, 1: 'low_pass', 2: 'high_pass'}
-        edge_map  = {0: None, 1: 'laplacian', 2: 'log', 3: 'dog'}
-        smooth_i  = self._smooth_combo.currentIndex()
-        edge_i    = self._edge_combo.currentIndex()
-        grain_on  = self._grain_cb.isChecked()
-        fft_idx   = self._fft_combo.currentIndex()
-        soft_on   = self._fft_soft_cb.isChecked()
-        shear_x   = float(self._undistort_shear_sl.value())
-        scale_y   = self._undistort_scale_sl.value() / 100.0
-        cfg = {
-            'remove_bad_lines': self._rbl_cb.isChecked(),
-            'align_rows':       align_map[self._align_combo.currentIndex()],
-            'bg_order':         bg_map[self._bg_combo.currentIndex()],
-            'bg_step_tolerance': self._bg_step_cb.isChecked(),
-            'facet_level':      self._facet_cb.isChecked(),
-            'smooth_sigma':     self._smooth_sigma_sl.value() if smooth_i != 0 else None,
-            'edge_method':      edge_map[edge_i],
-            'edge_sigma':       self._edge_sigma_sl.value(),
-            'edge_sigma2':      self._edge_sigma_sl.value() * 2,
-            'fft_mode':         fft_map[fft_idx],
-            'fft_cutoff':       self._fft_sl.value() / 100.0,
-            'fft_window':       'hanning',
-            'fft_soft_border':  soft_on,
-            'fft_soft_mode':    fft_map.get(fft_idx) or 'low_pass',
-            'fft_soft_cutoff':  self._fft_sl.value() / 100.0,
-            'fft_soft_border_frac': 0.12,
-            'linear_undistort': (shear_x != 0.0 or scale_y != 1.0),
-            'undistort_shear_x': shear_x,
-            'undistort_scale_y': scale_y,
-            'grain_threshold':  self._grain_thresh_sl.value() if grain_on else None,
-            'grain_above':      self._grain_above_rb.isChecked(),
-        }
-        self.processing_apply_requested.emit(cfg)
+        self.processing_apply_requested.emit(self._processing_panel.state())
 
     def _on_filter_click(self, mode: str):
         self._filter_mode = mode
@@ -4485,25 +4441,11 @@ class ProbeFlowWindow(QMainWindow):
                 "No images selected — click images first")
         else:
             steps = []
-            if cfg.get('remove_bad_lines'):
-                steps.append("bad lines")
             if cfg.get('align_rows'):
                 steps.append(f"align({cfg['align_rows']})")
-            if cfg.get('bg_order') is not None:
-                steps.append(f"bg-poly{cfg['bg_order']}")
-            if cfg.get('facet_level'):
-                steps.append("facet-level")
-            if cfg.get('smooth_sigma'):
-                steps.append(f"smooth(σ={cfg['smooth_sigma']}px)")
-            if cfg.get('edge_method'):
-                steps.append(f"edge({cfg['edge_method']})")
-            if cfg.get('fft_mode'):
-                steps.append(f"FFT-{cfg['fft_mode'].replace('_','-')} {cfg.get('fft_cutoff',0.1)*100:.0f}%")
-            if cfg.get('grain_threshold') is not None:
-                steps.append(f"grains@{cfg['grain_threshold']:.0f}%")
             desc = ", ".join(steps) if steps else "none"
             self._status_bar.showMessage(
-                f"[{desc}] applied to {n} image{'s' if n > 1 else ''}")
+                f"Quick corrections [{desc}] applied to {n} thumbnail{'s' if n > 1 else ''}")
             primary = self._grid.get_primary()
             if primary:
                 entry = next((e for e in self._grid.get_entries()
