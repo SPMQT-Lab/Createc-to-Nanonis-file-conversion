@@ -365,6 +365,15 @@ def process_dat(
     stack, new_Ny = trim_stack(stack)
     dat_hdr["Num.Y"] = str(new_Ny)
 
+    # "Drop the first column from every channel.  Createc storess a DAC
+    # initialisation value of 0 at stack[:,0,0] and a systematic feedback-
+    # settling transient at stack[:,1:,0] (first pixel of every raster line).
+    # Neither is real topography, so we strip col 0 here." - probeflow/readers/dat.py L86.
+
+    stack = stack[:, :, 1:]
+    Nx -= 1
+    dat_hdr["Num.X"] = str(Nx)
+
     bits = get_dac_bits(dat_hdr)
     vpd  = v_per_dac(bits)
     zs   = z_scale_m_per_dac(dat_hdr, vpd)
@@ -379,11 +388,12 @@ def process_dat(
     for k in range(num_chan):
         stack[k] = (stack[k] * (zs if k % 2 == 0 else is_)).astype(np.float32)
 
+    # Equalisatoin and trimming not applied to raw data.
     # Baseline shift (equalise) then percentile clip for .sxm storage
-    stack = stack - stack.min()
-    for i in range(num_chan):
-        lo, hi = percentile_clip(stack[i], clip_low, clip_high)
-        stack[i] = np.clip(stack[i], lo, hi)
+    #stack = stack - stack.min()
+    #for i in range(num_chan):
+    #    lo, hi = percentile_clip(stack[i], clip_low, clip_high)
+    #    stack[i] = np.clip(stack[i], lo, hi)
 
     FT = stack[0]
     FC = stack[1]
