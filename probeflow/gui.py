@@ -1747,7 +1747,12 @@ class _ZoomLabel(QLabel):
         scaled = self._pixmap_orig.scaled(w, h, Qt.KeepAspectRatio,
                                            Qt.SmoothTransformation)
         self.setPixmap(scaled)
-        self.resize(scaled.size())
+        # The label sits inside a ruler QGridLayout. A plain resize() can be
+        # overridden by the layout, leaving a large pixmap squeezed into a tiny
+        # label. Fixed size is what we want in this scroll-area context: zoom
+        # changes should alter the scrollable image extent, not let the layout
+        # compress the image to fit beside the rulers.
+        self.setFixedSize(scaled.size())
         self.update()
         self.pixmap_resized.emit(scaled.width())
 
@@ -2329,15 +2334,15 @@ class ImageViewerDialog(QDialog):
         self._ruler_left = RulerWidget("vertical")
         ruler_corner = QWidget()
         ruler_corner.setFixedSize(RulerWidget.THICKNESS_PX, RulerWidget.THICKNESS_PX)
-        ruler_container = QWidget()
-        ruler_grid = QGridLayout(ruler_container)
+        self._ruler_container = QWidget()
+        ruler_grid = QGridLayout(self._ruler_container)
         ruler_grid.setContentsMargins(0, 0, 0, 0)
         ruler_grid.setSpacing(0)
         ruler_grid.addWidget(ruler_corner,    0, 0)
         ruler_grid.addWidget(self._ruler_top, 0, 1)
         ruler_grid.addWidget(self._ruler_left, 1, 0)
         ruler_grid.addWidget(self._zoom_lbl,  1, 1)
-        self._scroll_area.setWidget(ruler_container)
+        self._scroll_area.setWidget(self._ruler_container)
         left_lay.addWidget(self._scroll_area, 1)
 
         self._scale_bar = ScaleBarWidget()
@@ -3297,6 +3302,12 @@ class ImageViewerDialog(QDialog):
         self._scale_bar.set_scan_size(w_nm, pw)
         self._ruler_top.set_extent(w_nm, pw)
         self._ruler_left.set_extent(h_nm, ph)
+        # The scroll area hosts a container (rulers + image), not the image
+        # label directly. When the pixmap/ruler fixed sizes change, Qt does not
+        # automatically resize that non-resizable scroll widget; without this,
+        # the container can stay at its tiny construction-time size and show
+        # only a postage-stamp slice of the large image.
+        self._ruler_container.adjustSize()
 
     def _on_pixmap_resized(self, new_width_px: int):
         # The signal carries width only — read height off the pixmap directly.
@@ -3306,6 +3317,7 @@ class ImageViewerDialog(QDialog):
         self._scale_bar.set_scan_size(w_nm, new_width_px)
         self._ruler_top.set_extent(w_nm, new_width_px)
         self._ruler_left.set_extent(h_nm, new_h)
+        self._ruler_container.adjustSize()
 
     # ── Controls ───────────────────────────────────────────────────────────────
     def _on_periodic_filter(self):

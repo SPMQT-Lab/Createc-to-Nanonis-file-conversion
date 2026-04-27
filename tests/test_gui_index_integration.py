@@ -6,9 +6,12 @@ conversion layer.  They do not require Qt or a running GUI.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from probeflow.indexing import (
     ProbeFlowItem,
@@ -64,6 +67,22 @@ SAMPLE_ITEMS = [
 TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
 
 
+@pytest.fixture
+def qapp():
+    try:
+        from PySide6.QtWidgets import QApplication
+    except Exception as exc:
+        pytest.skip(f"PySide6 unavailable: {exc}")
+
+    app = QApplication.instance()
+    if app is not None:
+        return app
+    try:
+        return QApplication([])
+    except Exception as exc:
+        pytest.skip(f"QApplication unavailable: {exc}")
+
+
 # ── Test A: image_browser_items returns only non-errored scans ────────────────
 
 class TestImageBrowserItems:
@@ -110,6 +129,29 @@ class TestViewerRenderSizing:
 
         assert img is not None
         assert img.size == (800, 800)
+
+    def test_viewer_ruler_layout_keeps_image_label_full_size(self, qapp, monkeypatch):
+        from PySide6.QtGui import QPixmap
+        from probeflow.gui import ImageViewerDialog, THEMES
+
+        monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+        entry = SxmFile(path=TESTDATA / "sxm_moire_10nm.sxm", stem="sxm_moire_10nm")
+        dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+        dlg._scan_range_m = (10e-9, 10e-9)
+        token = dlg._token
+
+        dlg._on_loaded(QPixmap(800, 800), token)
+        qapp.processEvents()
+
+        assert dlg._zoom_lbl.size().width() == 800
+        assert dlg._zoom_lbl.size().height() == 800
+        assert dlg._ruler_container.sizeHint().width() >= 826
+        assert dlg._ruler_container.sizeHint().height() >= 826
+        assert dlg._ruler_container.size().width() >= 826
+        assert dlg._ruler_container.size().height() >= 826
+
+        dlg.close()
+        dlg.deleteLater()
 
     def test_processed_viewer_render_can_upscale_small_scan_to_fit(self):
         from probeflow.scan import load_scan
