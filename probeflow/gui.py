@@ -314,6 +314,7 @@ def render_scan_thumbnail(
     size:      tuple          = (148, 116),
     vmin:      Optional[float] = None,
     vmax:      Optional[float] = None,
+    allow_upscale: bool       = False,
 ) -> Optional[Image.Image]:
     """Render a thumbnail of any supported scan format via the unified reader.
 
@@ -334,7 +335,11 @@ def render_scan_thumbnail(
         u8      = _array_to_uint8(arr, vmin=vmin, vmax=vmax)
         colored = _get_lut(colormap)[u8]
         img     = Image.fromarray(colored, mode="RGB")
-        img.thumbnail(size, Image.LANCZOS)
+        if size:
+            if allow_upscale:
+                img = _fit_image_to_box(img, size)
+            else:
+                img.thumbnail(size, Image.LANCZOS)
         return img
     except Exception:
         return None
@@ -397,6 +402,7 @@ def render_with_processing(
     size:       Optional[tuple] = None,
     vmin:       Optional[float] = None,
     vmax:       Optional[float] = None,
+    allow_upscale: bool = False,
 ) -> Optional[Image.Image]:
     """Apply the full processing pipeline to *arr* then render to a PIL Image.
 
@@ -446,10 +452,33 @@ def render_with_processing(
             img     = Image.fromarray(colored, mode="RGB")
 
         if size:
-            img.thumbnail(size, Image.LANCZOS)
+            if allow_upscale:
+                img = _fit_image_to_box(img, size)
+            else:
+                img.thumbnail(size, Image.LANCZOS)
         return img
     except Exception:
         return None
+
+
+def _fit_image_to_box(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Resize an image to fit inside ``size``, including upscaling.
+
+    Thumbnail cards intentionally avoid upscaling small scans. The large Viewer
+    is different: it should use the available screen real estate even for
+    160×160 Nanonis files. Keep that behavior explicit so future scale-bar or
+    ruler work does not accidentally route Viewer previews through
+    ``Image.thumbnail()``, which never enlarges.
+    """
+    max_w, max_h = int(size[0]), int(size[1])
+    if max_w <= 0 or max_h <= 0 or img.width <= 0 or img.height <= 0:
+        return img
+    scale = min(max_w / img.width, max_h / img.height)
+    new_w = max(1, int(round(img.width * scale)))
+    new_h = max(1, int(round(img.height * scale)))
+    if (new_w, new_h) == img.size:
+        return img
+    return img.resize((new_w, new_h), Image.LANCZOS)
 
 
 def _scan_items_to_sxm(items) -> list[SxmFile]:
@@ -706,14 +735,16 @@ class ViewerLoader(QRunnable):
                                              self.clip_low, self.clip_high,
                                              self.processing,
                                              size=(self.w, self.h),
-                                             vmin=self.vmin, vmax=self.vmax)
+                                             vmin=self.vmin, vmax=self.vmax,
+                                             allow_upscale=True)
             else:
                 img = None
         else:
             img = render_scan_thumbnail(self.entry.path, self.plane_idx,
                                         self.colormap, self.clip_low, self.clip_high,
                                         size=(self.w, self.h),
-                                        vmin=self.vmin, vmax=self.vmax)
+                                        vmin=self.vmin, vmax=self.vmax,
+                                        allow_upscale=True)
         if img is not None:
             self.signals.loaded.emit(pil_to_pixmap(img), self.token)
 

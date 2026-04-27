@@ -15,7 +15,14 @@ from probeflow.indexing import (
     image_browser_items,
     split_indexed_items,
 )
-from probeflow.gui import _scan_items_to_sxm, _spec_items_to_vert, SxmFile, VertFile
+from probeflow.gui import (
+    _scan_items_to_sxm,
+    _spec_items_to_vert,
+    render_scan_thumbnail,
+    render_with_processing,
+    SxmFile,
+    VertFile,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -54,6 +61,8 @@ SAMPLE_ITEMS = [
     _make_item("unknown.txt", item_type="unknown",  source_format="unknown"),
 ]
 
+TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+
 
 # ── Test A: image_browser_items returns only non-errored scans ────────────────
 
@@ -77,6 +86,47 @@ class TestImageBrowserItems:
 
     def test_empty_input(self):
         assert image_browser_items([]) == []
+
+
+# ── Test A2: large Viewer rendering may upscale small scans ──────────────────
+
+class TestViewerRenderSizing:
+    def test_scan_thumbnail_does_not_upscale_by_default(self):
+        img = render_scan_thumbnail(
+            TESTDATA / "sxm_moire_10nm.sxm",
+            size=(900, 800),
+            allow_upscale=False,
+        )
+
+        assert img is not None
+        assert img.size == (160, 160)
+
+    def test_viewer_render_can_upscale_small_scan_to_fit(self):
+        img = render_scan_thumbnail(
+            TESTDATA / "sxm_moire_10nm.sxm",
+            size=(900, 800),
+            allow_upscale=True,
+        )
+
+        assert img is not None
+        assert img.size == (800, 800)
+
+    def test_processed_viewer_render_can_upscale_small_scan_to_fit(self):
+        from probeflow.scan import load_scan
+
+        scan = load_scan(TESTDATA / "sxm_moire_10nm.sxm")
+        img = render_with_processing(
+            scan.planes[0],
+            "gray",
+            1.0,
+            99.0,
+            {"align_rows": "median"},
+            size=(900, 800),
+            allow_upscale=True,
+        )
+
+        assert img is not None
+        assert img.size == (800, 800)
 
 
 # ── Test B: split_indexed_items separates scans, spectra, errors ──────────────
