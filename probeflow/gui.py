@@ -70,8 +70,8 @@ from probeflow.display import (
 from probeflow.display_state import DisplayRangeState
 from probeflow.export_provenance import build_scan_export_provenance
 from probeflow.gui_processing import (
-    NUMERIC_PROC_KEYS,
     apply_processing_state_to_scan,
+    gui_state_has_numeric_processing,
     processing_state_from_gui,
 )
 from probeflow.gui_features import (
@@ -5629,7 +5629,7 @@ class ProbeFlowWindow(QMainWindow):
         label      = settings["format_label"]
 
         _, _, proc_state = self._grid.get_card_state(entry.stem)
-        has_processing = any(proc_state.get(k) for k in NUMERIC_PROC_KEYS)
+        has_processing = gui_state_has_numeric_processing(proc_state)
         out_stem = mark_processed_stem(entry.stem) if has_processing else entry.stem
         suggested = str(Path.home() / f"{out_stem}.{suffix}")
 

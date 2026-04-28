@@ -517,6 +517,37 @@ class TestApplyKnownSteps:
         assert result.shape == arr.shape
         assert float(np.std(np.nanmedian(result, axis=1))) < 1e-10
 
+    def test_remove_bad_lines_threshold_is_forwarded(self, monkeypatch):
+        captured = {}
+
+        def fake_remove_bad_lines(arr, threshold_mad=5.0):
+            captured["threshold_mad"] = threshold_mad
+            return arr
+
+        monkeypatch.setattr(
+            "probeflow.processing.remove_bad_lines",
+            fake_remove_bad_lines,
+        )
+        state = ProcessingState(steps=[
+            ProcessingStep("remove_bad_lines", {"threshold_mad": 3.25}),
+        ])
+        apply_processing_state(np.ones((8, 8)), state)
+        assert captured["threshold_mad"] == 3.25
+
+    def test_facet_level_threshold_is_forwarded(self, monkeypatch):
+        captured = {}
+
+        def fake_facet_level(arr, threshold_deg=3.0):
+            captured["threshold_deg"] = threshold_deg
+            return arr
+
+        monkeypatch.setattr("probeflow.processing.facet_level", fake_facet_level)
+        state = ProcessingState(steps=[
+            ProcessingStep("facet_level", {"threshold_deg": 5.5}),
+        ])
+        apply_processing_state(np.ones((8, 8)), state)
+        assert captured["threshold_deg"] == 5.5
+
     def test_roi_smooth_changes_only_selected_rectangle(self):
         rng = np.random.default_rng(3)
         arr = np.zeros((16, 16), dtype=float)

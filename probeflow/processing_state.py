@@ -142,7 +142,10 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
     for step in state.steps:
         p = step.params
         if step.op == "remove_bad_lines":
-            a = _proc.remove_bad_lines(a)
+            a = _proc.remove_bad_lines(
+                a,
+                threshold_mad=float(p.get("threshold_mad", 5.0)),
+            )
         elif step.op == "align_rows":
             a = _proc.align_rows(a, method=p.get("method", "median"))
         elif step.op == "plane_bg":
@@ -158,7 +161,10 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
                 mode=str(p.get("mode", "step_tolerant")),
             )
         elif step.op == "facet_level":
-            a = _proc.facet_level(a)
+            a = _proc.facet_level(
+                a,
+                threshold_deg=float(p.get("threshold_deg", 3.0)),
+            )
         elif step.op == "smooth":
             a = _proc.gaussian_smooth(a, sigma_px=float(p.get("sigma_px", 1.0)))
         elif step.op == "gaussian_high_pass":

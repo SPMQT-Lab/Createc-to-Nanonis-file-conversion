@@ -7,7 +7,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from probeflow.gui_processing import NUMERIC_PROC_KEYS, apply_processing_state_to_scan
+from probeflow.gui_processing import (
+    NUMERIC_PROC_KEYS,
+    apply_processing_state_to_scan,
+    gui_state_has_numeric_processing,
+    processing_history_entries_from_state,
+)
+from probeflow.processing_state import ProcessingState, ProcessingStep
 from probeflow.scan import Scan, load_scan
 from probeflow.sxm_io import parse_sxm_header
 
@@ -122,6 +128,35 @@ class TestApplyProcessingStateNoOp:
         scan = _make_scan(np.zeros((4, 4)))
         result = apply_processing_state_to_scan(scan, {})
         assert result is scan
+
+    def test_gui_state_has_numeric_processing_uses_canonical_conversion(self):
+        assert gui_state_has_numeric_processing({"grain_threshold": 50}) is False
+        assert gui_state_has_numeric_processing({"align_rows": "median"}) is True
+        assert gui_state_has_numeric_processing({
+            "set_zero_plane_points": [(0, 0), (3, 0), (0, 3)],
+        }) is True
+
+    def test_processing_history_entries_share_canonical_shape(self):
+        state = ProcessingState(steps=[
+            ProcessingStep("smooth", {"sigma_px": 2.0}),
+            ProcessingStep("plane_bg", {"order": 1, "step_tolerance": False}),
+        ])
+        entries = processing_history_entries_from_state(
+            state,
+            timestamp="2026-04-28T00:00:00",
+        )
+        assert entries == [
+            {
+                "op": "smooth",
+                "params": {"sigma_px": 2.0},
+                "timestamp": "2026-04-28T00:00:00",
+            },
+            {
+                "op": "plane_bg",
+                "params": {"order": 1, "step_tolerance": False},
+                "timestamp": "2026-04-28T00:00:00",
+            },
+        ]
 
 
 # ─── Task 3: GUI processing helper — one operation ───────────────────────────

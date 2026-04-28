@@ -41,7 +41,6 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -50,6 +49,8 @@ from PIL import Image
 
 from probeflow import processing as _proc
 from probeflow.common import setup_logging
+from probeflow.gui_processing import processing_history_entries_from_state
+from probeflow.processing_state import ProcessingState, ProcessingStep
 from probeflow.scan import load_scan
 from probeflow.scan_model import Scan
 from probeflow.sxm_io import (
@@ -89,25 +90,37 @@ class _Op:
     passed anywhere an op function is expected, but also carries the
     metadata needed to write a ``processing_history`` entry.
     """
-    __slots__ = ("name", "params", "_fn")
+    __slots__ = ("name", "params", "_fn", "state")
 
     def __init__(self, name: str, params: dict,
-                 fn: Callable[[np.ndarray], np.ndarray]) -> None:
+                 fn: Callable[[np.ndarray], np.ndarray] | None = None,
+                 state: ProcessingState | None = None) -> None:
         self.name = name
         self.params = params
         self._fn = fn
+        self.state = state
+
+    @classmethod
+    def from_step(cls, step: ProcessingStep) -> "_Op":
+        return cls(
+            step.op,
+            dict(step.params),
+            state=ProcessingState(steps=[step]),
+        )
 
     def __call__(self, arr: np.ndarray) -> np.ndarray:
+        if self.state is not None:
+            from probeflow.processing_state import apply_processing_state
+            return apply_processing_state(arr, self.state)
+        if self._fn is None:
+            raise TypeError(f"Processing operation {self.name!r} has no executor")
         return self._fn(arr)
 
 
 def _record_op(scan: "Scan", name: str, params: dict) -> None:
     """Append one history entry to *scan.processing_history*."""
-    scan.processing_history.append({
-        "op": name,
-        "params": params,
-        "timestamp": datetime.now().isoformat(),
-    })
+    state = ProcessingState(steps=[ProcessingStep(name, dict(params))])
+    scan.processing_history.extend(processing_history_entries_from_state(state))
 
 
 # ─── Shared argument helpers ─────────────────────────────────────────────────
@@ -220,38 +233,43 @@ def _cli_png_provenance(scan: Scan, plane_idx: int, args, out_path, export_kind:
 # ─── Pipeline atoms (each returns an _Op) ────────────────────────────────────
 
 def _op_plane_bg(order: int) -> _Op:
-    return _Op("plane_bg", {"order": order},
-               lambda a: _proc.subtract_background(a, order=order))
+    return _Op.from_step(ProcessingStep("plane_bg", {"order": order}))
 
 
 def _op_align_rows(method: str) -> _Op:
-    return _Op("align_rows", {"method": method},
-               lambda a: _proc.align_rows(a, method=method))
+    return _Op.from_step(ProcessingStep("align_rows", {"method": method}))
 
 
 def _op_remove_bad_lines(mad: float) -> _Op:
-    return _Op("remove_bad_lines", {"threshold_mad": mad},
-               lambda a: _proc.remove_bad_lines(a, threshold_mad=mad))
+    return _Op.from_step(ProcessingStep(
+        "remove_bad_lines",
+        {"threshold_mad": mad},
+    ))
 
 
 def _op_facet_level(deg: float) -> _Op:
-    return _Op("facet_level", {"threshold_deg": deg},
-               lambda a: _proc.facet_level(a, threshold_deg=deg))
+    return _Op.from_step(ProcessingStep(
+        "facet_level",
+        {"threshold_deg": deg},
+    ))
 
 
 def _op_smooth(sigma: float) -> _Op:
-    return _Op("smooth", {"sigma_px": sigma},
-               lambda a: _proc.gaussian_smooth(a, sigma_px=sigma))
+    return _Op.from_step(ProcessingStep("smooth", {"sigma_px": sigma}))
 
 
 def _op_edge(method: str, sigma: float, sigma2: float) -> _Op:
-    return _Op("edge_detect", {"method": method, "sigma": sigma, "sigma2": sigma2},
-               lambda a: _proc.edge_detect(a, method=method, sigma=sigma, sigma2=sigma2))
+    return _Op.from_step(ProcessingStep(
+        "edge_detect",
+        {"method": method, "sigma": sigma, "sigma2": sigma2},
+    ))
 
 
 def _op_fft(mode: str, cutoff: float, window: str) -> _Op:
-    return _Op("fourier_filter", {"mode": mode, "cutoff": cutoff, "window": window},
-               lambda a: _proc.fourier_filter(a, mode=mode, cutoff=cutoff, window=window))
+    return _Op.from_step(ProcessingStep(
+        "fourier_filter",
+        {"mode": mode, "cutoff": cutoff, "window": window},
+    ))
 
 
 # ─── Per-command runners ─────────────────────────────────────────────────────

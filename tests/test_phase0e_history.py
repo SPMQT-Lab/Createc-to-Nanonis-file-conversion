@@ -112,6 +112,29 @@ class TestOpFactories:
         assert op.name == expected_name
         assert op.params == expected_params
 
+    def test_factory_ops_execute_through_canonical_processing_state(self, monkeypatch):
+        calls = []
+
+        def fake_apply_processing_state(arr, state):
+            calls.append(state.to_dict())
+            return arr + 1
+
+        monkeypatch.setattr(
+            "probeflow.processing_state.apply_processing_state",
+            fake_apply_processing_state,
+        )
+
+        arr = np.zeros((4, 4))
+        result = _op_remove_bad_lines(3.0)(arr)
+
+        np.testing.assert_array_equal(result, np.ones((4, 4)))
+        assert calls == [{
+            "steps": [{
+                "op": "remove_bad_lines",
+                "params": {"threshold_mad": 3.0},
+            }]
+        }]
+
 
 # ─── pipeline records each step in order ─────────────────────────────────────
 

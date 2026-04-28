@@ -6,7 +6,7 @@ No Qt imports — this module can be tested without a running Qt event loop.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from probeflow.scan_model import Scan
@@ -204,6 +204,34 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
     return ProcessingState(steps=steps)
 
 
+def processing_history_entries_from_state(
+    state: "ProcessingState",
+    *,
+    timestamp: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return ``Scan.processing_history`` entries for a canonical state.
+
+    This is intentionally the one small adapter between the canonical
+    ``ProcessingState`` model and the older ``Scan.processing_history`` list.
+    Keeping that adapter here prevents Viewer, Convert, CLI, and future
+    handoff paths from inventing slightly different history dictionaries.
+    """
+    ts = timestamp or datetime.now().isoformat()
+    return [
+        {
+            "op": step.op,
+            "params": dict(step.params),
+            "timestamp": ts,
+        }
+        for step in state.steps
+    ]
+
+
+def gui_state_has_numeric_processing(gui_state: dict | None) -> bool:
+    """Return whether a GUI dict emits at least one canonical processing step."""
+    return bool(processing_state_from_gui(gui_state or {}).steps)
+
+
 def apply_processing_state_to_scan(
     scan: "Scan",
     proc_state: dict,
@@ -228,16 +256,9 @@ def apply_processing_state_to_scan(
         )
 
     state    = processing_state_from_gui(proc_state)
-    now      = datetime.now().isoformat()
     a        = apply_processing_state(scan.planes[plane_idx], state)
 
     scan.planes[plane_idx] = a
-
-    for step in state.steps:
-        scan.processing_history.append({
-            "op":        step.op,
-            "params":    dict(step.params),
-            "timestamp": now,
-        })
+    scan.processing_history.extend(processing_history_entries_from_state(state))
 
     return scan
