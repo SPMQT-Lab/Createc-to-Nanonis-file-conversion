@@ -24,9 +24,14 @@ from probeflow.gui import (
     _spec_items_to_vert,
     BrowseInfoPanel,
     BrowseToolPanel,
+    GUI_FONT_DEFAULT,
+    GUI_FONT_SIZES,
+    load_config,
+    normalise_gui_font_size,
     render_scan_thumbnail,
     render_with_processing,
     resolve_thumbnail_plane_index,
+    save_config,
     THUMBNAIL_CHANNEL_DEFAULT,
     SxmFile,
     ThumbnailGrid,
@@ -338,6 +343,21 @@ class TestThumbnailGridChannelSelection:
 
 
 class TestBrowseLayoutCleanup:
+    def test_font_size_helper_and_config_round_trip(self, tmp_path, monkeypatch):
+        import probeflow.gui as gui_mod
+
+        cfg_path = tmp_path / "config.json"
+        monkeypatch.setattr(gui_mod, "CONFIG_PATH", cfg_path)
+
+        assert normalise_gui_font_size("bogus") == GUI_FONT_DEFAULT
+        assert GUI_FONT_SIZES == {"Small": 9, "Medium": 12, "Large": 14}
+
+        save_config({"gui_font_size": "Large", "dark_mode": False})
+        cfg = load_config()
+
+        assert cfg["gui_font_size"] == "Large"
+        assert cfg["dark_mode"] is False
+
     def test_browse_tool_panel_has_live_thumbnail_controls_only(self, qapp):
         from PySide6.QtWidgets import QPushButton
 
@@ -353,6 +373,20 @@ class TestBrowseLayoutCleanup:
         assert "↩ Undo last thumbnail change" not in button_texts
         assert "⟲ Reset to original (clear all filters)" not in button_texts
         assert "⬇ Export PNG…" not in button_texts
+
+        panel.close()
+        panel.deleteLater()
+
+    def test_browse_info_font_selector_defaults_and_emits(self, qapp):
+        panel = BrowseInfoPanel(THEMES["dark"], {})
+        seen = []
+        panel.font_size_changed.connect(seen.append)
+
+        assert panel.font_size_cb.currentText() == "Medium"
+
+        panel.font_size_cb.setCurrentText("Large")
+
+        assert seen == ["Large"]
 
         panel.close()
         panel.deleteLater()
@@ -391,6 +425,27 @@ class TestBrowseLayoutCleanup:
             "Z forward",
             "Current forward",
         ]
+        assert panel.name_lbl.sizePolicy().verticalPolicy().name == "Maximum"
+
+        panel.close()
+        panel.deleteLater()
+
+    def test_metadata_table_wraps_and_uses_resizable_columns(self, qapp):
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QHeaderView
+
+        panel = BrowseInfoPanel(THEMES["dark"], {})
+        panel._meta_rows = [
+            ("COMMENT", "long metadata value " * 20),
+            ("SCAN_RANGE", "1 2"),
+        ]
+        panel._filter_meta()
+
+        assert panel.meta_table.wordWrap() is True
+        assert panel.meta_table.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+        assert panel.meta_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.Interactive
+        assert panel.meta_table.horizontalHeader().sectionResizeMode(1) == QHeaderView.Stretch
+        assert panel.meta_table.rowHeight(0) >= panel.meta_table.verticalHeader().defaultSectionSize()
 
         panel.close()
         panel.deleteLater()

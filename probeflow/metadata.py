@@ -139,8 +139,15 @@ def _extract_createc_fields(hdr: dict) -> tuple:
     bias_mv = _f(hdr.get("BiasVolt.[mV]") or hdr.get("Biasvolt[mV]"))
     bias = bias_mv / 1000.0 if bias_mv is not None else None
 
-    # Setpoint current: "Current[A]"
-    setpoint = _f(hdr.get("Current[A]"))
+    # Setpoint current: old headers use Current[A], newer ones often use
+    # SetPoint in amps. FBLogIset is a pA-style fallback and can be zero for
+    # off-feedback/AFM scans, which should remain unknown in the summary.
+    setpoint = _positive_or_none(_f(hdr.get("Current[A]")))
+    if setpoint is None:
+        setpoint = _positive_or_none(_f(hdr.get("SetPoint")))
+    if setpoint is None:
+        fb_log_pA = _positive_or_none(_f(hdr.get("FBLogIset")))
+        setpoint = fb_log_pA * 1e-12 if fb_log_pA is not None else None
 
     # Comment / title: "Titel" (German for title)
     raw_titel = hdr.get("Titel", "")
@@ -150,6 +157,12 @@ def _extract_createc_fields(hdr: dict) -> tuple:
     acq_dt = str(hdr.get("PSTMAFM.EXE_Date", "")).strip() or None
 
     return bias, setpoint, comment, acq_dt
+
+
+def _positive_or_none(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return value if value > 0 else None
 
 
 def _extract_nanonis_fields(hdr: dict) -> tuple:

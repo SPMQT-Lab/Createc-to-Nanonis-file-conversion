@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
     QDialog, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton,
-    QScrollArea, QSlider, QSplitter, QStackedWidget,
+    QScrollArea, QSizePolicy, QSlider, QSplitter, QStackedWidget,
     QStatusBar, QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit,
     QToolTip, QVBoxLayout, QWidget,
 )
@@ -639,6 +639,14 @@ def scan_vert_folder(root: Path) -> list[VertFile]:
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
+GUI_FONT_SIZES = {"Small": 9, "Medium": 12, "Large": 14}
+GUI_FONT_DEFAULT = "Medium"
+
+
+def normalise_gui_font_size(label: str | None) -> str:
+    return label if label in GUI_FONT_SIZES else GUI_FONT_DEFAULT
+
+
 def load_config() -> dict:
     defaults = {
         "dark_mode":       True,
@@ -651,12 +659,14 @@ def load_config() -> dict:
         "clip_high":       99.0,
         "colormap":        DEFAULT_CMAP_LABEL,
         "browse_filter":   "all",
+        "gui_font_size":   GUI_FONT_DEFAULT,
     }
     try:
         if CONFIG_PATH.exists():
             defaults.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
     except Exception:
         pass
+    defaults["gui_font_size"] = normalise_gui_font_size(defaults.get("gui_font_size"))
     return defaults
 
 
@@ -3905,10 +3915,12 @@ class BrowseToolPanel(QWidget):
 # ── Browse info panel (RIGHT) ─────────────────────────────────────────────────
 class BrowseInfoPanel(QWidget):
     """Right-side info panel: selected file name, channel thumbnails, metadata."""
+    font_size_changed = Signal(str)
 
     def __init__(self, t: dict, cfg: dict, parent=None):
         super().__init__(parent)
         self._t         = t
+        self._font_size_label = normalise_gui_font_size(cfg.get("gui_font_size"))
         self._pool      = QThreadPool.globalInstance()
         self._ch_token  = object()
         self._meta_rows: list[tuple[str, str]] = []
@@ -3918,12 +3930,26 @@ class BrowseInfoPanel(QWidget):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 8, 10, 6)
-        lay.setSpacing(5)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(3)
+
+        font_row = QHBoxLayout()
+        font_row.setContentsMargins(0, 0, 0, 0)
+        font_lbl = QLabel("Text size")
+        font_lbl.setFont(QFont("Helvetica", 8))
+        self.font_size_cb = QComboBox()
+        self.font_size_cb.addItems(list(GUI_FONT_SIZES))
+        self.font_size_cb.setCurrentText(self._font_size_label)
+        self.font_size_cb.setFont(QFont("Helvetica", 9))
+        self.font_size_cb.currentTextChanged.connect(self._on_font_size_changed)
+        font_row.addWidget(font_lbl)
+        font_row.addWidget(self.font_size_cb, 1)
+        lay.addLayout(font_row)
 
         self.name_lbl = QLabel("No scan selected")
         self.name_lbl.setFont(QFont("Helvetica", 10, QFont.Bold))
         self.name_lbl.setWordWrap(True)
+        self.name_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         lay.addWidget(self.name_lbl)
 
         # Compact key scan summary. Keep this tight so channels sit high.
@@ -3986,8 +4012,11 @@ class BrowseInfoPanel(QWidget):
 
         self.meta_table = QTableWidget(0, 2)
         self.meta_table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.meta_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.meta_table.setWordWrap(True)
+        self.meta_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.meta_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
         self.meta_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.meta_table.setColumnWidth(0, 92)
         self.meta_table.verticalHeader().setVisible(False)
         self.meta_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.meta_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -3999,11 +4028,18 @@ class BrowseInfoPanel(QWidget):
         self._meta_widget.setVisible(False)
         lay.addWidget(self._meta_widget, 1)
 
+    def _on_font_size_changed(self, label: str):
+        label = normalise_gui_font_size(label)
+        self._font_size_label = label
+        self.font_size_changed.emit(label)
+
     def _toggle_meta(self):
         vis = not self._meta_widget.isVisible()
         self._meta_widget.setVisible(vis)
         self._meta_toggle.setText(
             "[-] Hide all metadata" if vis else "[+] Show all metadata")
+        if vis:
+            self.meta_table.resizeRowsToContents()
 
     # ── Public API ─────────────────────────────────────────────────────────────
     def show_entry(self, entry: SxmFile, colormap_key: str,
@@ -4176,6 +4212,7 @@ class BrowseInfoPanel(QWidget):
                 v_item.setForeground(QColor(t["fg"]))
                 self.meta_table.setItem(row, 0, p_item)
                 self.meta_table.setItem(row, 1, v_item)
+        self.meta_table.resizeRowsToContents()
 
 
 # ── Features tab integration ────────────────────────────────────────────────
@@ -4956,6 +4993,7 @@ class ProbeFlowWindow(QMainWindow):
 
         self._cfg      = load_config()
         self._dark     = self._cfg.get("dark_mode", True)
+        self._gui_font_size = normalise_gui_font_size(self._cfg.get("gui_font_size"))
         self._mode     = "browse"
         self._running  = False
         self._n_loaded = 0
@@ -5059,6 +5097,7 @@ class ProbeFlowWindow(QMainWindow):
         self._browse_tools.map_spectra_requested.connect(self._on_map_spectra)
         self._browse_tools.filter_changed.connect(self._on_filter_changed)
         self._browse_tools.thumbnail_channel_changed.connect(self._on_thumbnail_channel_changed)
+        self._browse_info.font_size_changed.connect(self._on_gui_font_size_changed)
         # Sync initial filter state from the toolbar into the grid so the
         # two agree even before the first folder is opened.
         self._grid.apply_filter(self._browse_tools.get_filter_mode())
@@ -5521,9 +5560,16 @@ class ProbeFlowWindow(QMainWindow):
         self._navbar.set_dark(self._dark)
         self._apply_theme()
 
+    def _on_gui_font_size_changed(self, label: str):
+        self._gui_font_size = normalise_gui_font_size(label)
+        self._apply_theme()
+        self._status_bar.showMessage(f"Text size: {self._gui_font_size}")
+
     def _apply_theme(self):
         t = THEMES["dark" if self._dark else "light"]
-        QApplication.instance().setStyleSheet(_build_qss(t))
+        app = QApplication.instance()
+        app.setFont(QFont("Helvetica", GUI_FONT_SIZES[self._gui_font_size]))
+        app.setStyleSheet(_build_qss(t, GUI_FONT_SIZES[self._gui_font_size]))
         self._grid.apply_theme(t)
         self._browse_tools.apply_theme(t)
         self._browse_info.apply_theme(t)
@@ -5550,6 +5596,7 @@ class ProbeFlowWindow(QMainWindow):
             "clip_high":     self._convert_sidebar.clip_high_spin.value(),
             "colormap":      self._browse_tools.cmap_cb.currentText(),
             "browse_filter": self._browse_tools.get_filter_mode(),
+            "gui_font_size": self._gui_font_size,
         })
         super().closeEvent(event)
 
@@ -5564,12 +5611,13 @@ def _sep() -> QFrame:
 
 
 # ── QSS stylesheet ─────────────────────────────────────────────────────────────
-def _build_qss(t: dict) -> str:
+def _build_qss(t: dict, font_pt: int = GUI_FONT_SIZES[GUI_FONT_DEFAULT]) -> str:
     return f"""
 QMainWindow, QWidget {{
     background-color: {t['main_bg']};
     color: {t['fg']};
     font-family: Helvetica, Arial, sans-serif;
+    font-size: {font_pt}pt;
 }}
 QScrollArea, QScrollArea > QWidget > QWidget {{
     background-color: {t['main_bg']};

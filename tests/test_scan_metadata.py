@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from probeflow import read_scan_metadata
-from probeflow.metadata import metadata_from_scan, ScanMetadata
+from probeflow.metadata import _extract_createc_fields, metadata_from_scan, ScanMetadata
 from probeflow.scan import load_scan
 
 
@@ -172,3 +172,38 @@ class TestScanMetadataContract:
         assert isinstance(meta_sxm, ScanMetadata)
         assert meta_dat.source_format == "createc_dat"
         assert meta_sxm.source_format == "nanonis_sxm"
+
+
+class TestCreatecSetpointExtraction:
+    def test_current_a_preferred(self):
+        _bias, setpoint, _comment, _dt = _extract_createc_fields({
+            "Current[A]": "4.4E-10",
+            "SetPoint": "1.0E-9",
+            "FBLogIset": "999",
+        })
+        assert setpoint == pytest.approx(4.4e-10)
+
+    def test_setpoint_fallback_is_amps(self):
+        _bias, setpoint, _comment, _dt = _extract_createc_fields({
+            "SetPoint": "1.01E-10",
+            "FBLogIset": "999",
+        })
+        assert setpoint == pytest.approx(1.01e-10)
+
+    def test_fblogiset_last_resort_is_pa(self):
+        _bias, setpoint, _comment, _dt = _extract_createc_fields({
+            "FBLogIset": "88.4",
+        })
+        assert setpoint == pytest.approx(88.4e-12)
+
+    def test_zero_setpoints_remain_unknown(self):
+        _bias, setpoint, _comment, _dt = _extract_createc_fields({
+            "Current[A]": "0",
+            "SetPoint": "0.00E+00",
+            "FBLogIset": "0.000",
+        })
+        assert setpoint is None
+
+    def test_newer_createc_fixture_uses_setpoint_header(self):
+        meta = read_scan_metadata(TESTDATA / "createc_scan_overview_240nm_pos.dat")
+        assert meta.setpoint == pytest.approx(1.01e-10)
