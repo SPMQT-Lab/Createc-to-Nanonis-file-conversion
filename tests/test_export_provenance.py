@@ -26,6 +26,7 @@ from probeflow.export_provenance import (
     ExportProvenance,
     background_processing_warnings,
     build_scan_export_provenance,
+    png_display_state,
     processing_state_hash,
 )
 from probeflow.processing_state import ProcessingState, ProcessingStep
@@ -285,6 +286,22 @@ class TestFromScanExport:
         assert len(warnings) == 1
         assert "background" in warnings[0]
 
+    def test_png_display_state_adds_visual_export_options(self):
+        display = png_display_state(
+            clip_low=2.0,
+            clip_high=98.0,
+            colormap="plasma",
+            add_scalebar=False,
+            scalebar_unit="nm",
+            scalebar_pos="bottom-left",
+        )
+        assert display["mode"] == "percentile"
+        assert display["low_pct"] == 2.0
+        assert display["high_pct"] == 98.0
+        assert display["colormap"] == "plasma"
+        assert display["add_scalebar"] is False
+        assert display["scalebar_pos"] == "bottom-left"
+
 
 # ── C: DisplayRangeState.to_dict() preserves mode and limits ─────────────────
 
@@ -517,6 +534,32 @@ class TestPngNoRegression:
         assert out.exists(), "PNG not written"
         assert sidecar.exists(), "Sidecar not written via write_png"
 
+    def test_write_png_builds_standard_provenance_by_default(self, tmp_path):
+        from probeflow.writers.png import write_png
+
+        scan = _make_scan()
+        scan.processing_history = [
+            {"op": "align_rows", "params": {"method": "median"}, "timestamp": "T"},
+        ]
+        out = tmp_path / "scan.png"
+        write_png(
+            scan,
+            out,
+            plane_idx=0,
+            colormap="plasma",
+            clip_low=2.0,
+            clip_high=98.0,
+            add_scalebar=False,
+        )
+
+        sidecar = out.with_suffix("").with_suffix(".provenance.json")
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        assert data["export_kind"] == "png"
+        assert data["processing_state"]["steps"][0]["op"] == "align_rows"
+        assert data["display_state"]["colormap"] == "plasma"
+        assert data["display_state"]["add_scalebar"] is False
+        assert data["artifact_id"]
+
     def test_prepared_png_export_writes_handoff_sidecar_warning(self, tmp_path):
         from probeflow.prepared_export import write_prepared_png
 
@@ -574,6 +617,8 @@ class TestPngNoRegression:
         assert data["export_kind"] == "cli_sxm2png"
         assert data["processing_state"] == {"steps": []}
         assert data["display_state"]["mode"] == "percentile"
+        assert data["display_state"]["colormap"] == "gray"
+        assert data["display_state"]["add_scalebar"] is False
         assert data["source_id"]
 
     def test_cli_pipeline_png_records_processing_sidecar(self, tmp_path):

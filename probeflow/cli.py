@@ -212,19 +212,22 @@ def _write_output(
 
 def _cli_png_provenance(scan: Scan, plane_idx: int, args, out_path, export_kind: str):
     """Build standard provenance for CLI PNG-style exports."""
-    from probeflow.display_state import DisplayRangeState
-    from probeflow.export_provenance import build_scan_export_provenance
+    from probeflow.export_provenance import build_scan_export_provenance, png_display_state
 
     clip_low = getattr(args, "clip_low", 1.0)
     clip_high = getattr(args, "clip_high", 99.0)
-    drs = DisplayRangeState(
-        low_pct=float(1.0 if clip_low is None else clip_low),
-        high_pct=float(99.0 if clip_high is None else clip_high),
+    display_state = png_display_state(
+        clip_low=float(1.0 if clip_low is None else clip_low),
+        clip_high=float(99.0 if clip_high is None else clip_high),
+        colormap=getattr(args, "colormap", None),
+        add_scalebar=not bool(getattr(args, "no_scalebar", False)),
+        scalebar_unit=getattr(args, "scalebar_unit", None),
+        scalebar_pos=getattr(args, "scalebar_pos", None),
     )
     return build_scan_export_provenance(
         scan,
         channel_index=plane_idx,
-        display_state=drs,
+        display_state=display_state,
         export_kind=export_kind,
         output_path=out_path,
     )

@@ -6,6 +6,7 @@ exercised end-to-end on realistic data.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -85,6 +86,11 @@ class TestGwy:
         obj = GwyContainer.fromfile(str(out))
         assert obj["/0/data/title"] == dat_scan.plane_names[plane_idx]
         assert obj["/0/data"].data.shape == dat_scan.planes[plane_idx].shape
+        meta = obj["/0/meta"]
+        prov = json.loads(meta["ProbeFlow export provenance"])
+        assert prov["export_kind"] == "gwy"
+        assert prov["channel_index"] == plane_idx
+        assert meta["ProbeFlow processing state hash"] == prov["processing_state_hash"]
         assert "/1/data" not in obj
 
     def test_via_save_method(self, dat_scan, tmp_path):

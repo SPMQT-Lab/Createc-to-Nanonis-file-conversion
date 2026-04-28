@@ -34,6 +34,7 @@ class TestBuildComment:
         comment = _build_comment(scan)
         assert comment.startswith("Source: scan.sxm")
         assert "ProcessingStateHash:" in comment
+        assert "SourceId:" in comment
         assert "Operations" not in comment
 
     def test_history_includes_source_and_ops(self):
@@ -139,6 +140,7 @@ class TestSxmSourcedComment:
         hdr = parse_sxm_header(out)
         comment = hdr.get("COMMENT", "")
         assert f"Source: {sample_sxm.name}" in comment
+        assert "ArtifactId:" in comment
         assert "Operations" not in comment
 
     def test_non_comment_fields_survive_roundtrip(self, sample_sxm, tmp_path):

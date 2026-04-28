@@ -68,7 +68,7 @@ from probeflow.display import (
     histogram_from_array as _histogram_from_array,
 )
 from probeflow.display_state import DisplayRangeState
-from probeflow.export_provenance import build_scan_export_provenance
+from probeflow.export_provenance import build_scan_export_provenance, png_display_state
 from probeflow.gui_processing import (
     apply_processing_state_to_scan,
     gui_state_has_numeric_processing,
@@ -3431,7 +3431,13 @@ class ImageViewerDialog(QDialog):
                         channel_index=ch_idx,
                         channel_name=PLANE_NAMES[ch_idx] if 0 <= ch_idx < len(PLANE_NAMES) else None,
                         processing_state=ps,
-                        display_state=self._drs,
+                        display_state=png_display_state(
+                            self._drs,
+                            colormap=self._colormap,
+                            add_scalebar=True,
+                            scalebar_unit="nm",
+                            scalebar_pos="bottom-right",
+                        ),
                         export_kind="viewer_png",
                         output_path=out_path,
                     )
@@ -5689,7 +5695,13 @@ class ProbeFlowWindow(QMainWindow):
                 scan,
                 channel_index=0,
                 processing_state=ps,
-                display_state=drs,
+                display_state=png_display_state(
+                    drs,
+                    colormap=cmap_key,
+                    add_scalebar=settings["add_scalebar"],
+                    scalebar_unit=settings["scalebar_unit"],
+                    scalebar_pos=settings["scalebar_pos"],
+                ),
                 export_kind="convert_png",
                 output_path=out_path,
             )

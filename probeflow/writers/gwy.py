@@ -12,7 +12,7 @@ import json
 import numpy as np
 
 from probeflow.common import check_overwrite
-from probeflow.export_provenance import processing_state_from_history, processing_state_hash
+from probeflow.export_provenance import build_scan_export_provenance
 from probeflow.scan_model import Scan
 
 
@@ -35,8 +35,16 @@ def _plane_meta(
     plane_name: str,
     plane_unit: str,
     visible: bool,
+    out_path=None,
 ):
     """Build a small metadata container for the exported plane."""
+    prov = build_scan_export_provenance(
+        scan,
+        channel_index=plane_idx,
+        channel_name=plane_name,
+        export_kind="gwy",
+        output_path=out_path,
+    )
     meta = GwyContainer()
     meta["ProbeFlow source path"] = (
         str(scan.source_path) if scan.source_path is not None else ""
@@ -49,10 +57,18 @@ def _plane_meta(
     meta["ProbeFlow scan width (m)"] = float(scan.scan_range_m[0])
     meta["ProbeFlow scan height (m)"] = float(scan.scan_range_m[1])
     meta["ProbeFlow num planes"] = int(scan.n_planes)
-    ps = processing_state_from_history(scan.processing_history)
-    meta["ProbeFlow processing state"] = json.dumps(ps, sort_keys=True)
-    meta["ProbeFlow processing state hash"] = processing_state_hash(ps)
-    meta["ProbeFlow processing steps"] = int(len(ps.get("steps", [])))
+    meta["ProbeFlow export provenance"] = json.dumps(prov.to_dict(), sort_keys=True)
+    meta["ProbeFlow processing state"] = json.dumps(
+        prov.processing_state,
+        sort_keys=True,
+    )
+    meta["ProbeFlow processing state hash"] = str(prov.processing_state_hash)
+    meta["ProbeFlow processing steps"] = int(
+        len(prov.processing_state.get("steps", []))
+    )
+    meta["ProbeFlow source id"] = str(prov.source_id or "")
+    meta["ProbeFlow channel id"] = str(prov.channel_id or "")
+    meta["ProbeFlow artifact id"] = str(prov.artifact_id or "")
     return meta
 
 
@@ -127,6 +143,7 @@ def write_gwy(
             plane_name,
             plane_unit,
             True,
+            out_path,
         )
 
     container.tofile(str(out_path))

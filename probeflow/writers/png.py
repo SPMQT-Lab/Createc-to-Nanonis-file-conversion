@@ -8,6 +8,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from probeflow.common import check_overwrite
+from probeflow.export_provenance import build_scan_export_provenance, png_display_state
 from probeflow.processing import export_png
 from probeflow.scan_model import Scan
 
@@ -50,6 +51,21 @@ def write_png(
         raise ValueError(
             f"plane_idx={plane_idx} out of range for Scan with "
             f"{scan.n_planes} plane(s)"
+        )
+    if provenance is None:
+        provenance = build_scan_export_provenance(
+            scan,
+            channel_index=plane_idx,
+            display_state=png_display_state(
+                clip_low=clip_low,
+                clip_high=clip_high,
+                colormap=colormap,
+                add_scalebar=add_scalebar,
+                scalebar_unit=scalebar_unit,
+                scalebar_pos=scalebar_pos,
+            ),
+            export_kind="png",
+            output_path=out_path,
         )
     arr = scan.planes[plane_idx]
     export_png(

@@ -12,6 +12,7 @@ from probeflow.display_state import DisplayRangeState
 from probeflow.export_provenance import (
     background_processing_warnings,
     build_scan_export_provenance,
+    png_display_state,
 )
 from probeflow.processing_state import ProcessingState
 from probeflow.scan_model import Scan
@@ -49,7 +50,15 @@ def write_prepared_png(
         scan,
         channel_index=plane_idx,
         processing_state=ps_dict,
-        display_state=display_state,
+        display_state=png_display_state(
+            display_state,
+            clip_low=clip_low,
+            clip_high=clip_high,
+            colormap=colormap,
+            add_scalebar=add_scalebar,
+            scalebar_unit="nm",
+            scalebar_pos="bottom-right",
+        ),
         export_kind="prepared_png",
         output_path=out_path,
         warnings=warnings,

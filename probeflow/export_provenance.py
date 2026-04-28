@@ -281,6 +281,46 @@ def build_scan_export_provenance(
     )
 
 
+def png_display_state(
+    display_state: "DisplayRangeState | dict[str, Any] | None" = None,
+    *,
+    clip_low: float = 1.0,
+    clip_high: float = 99.0,
+    colormap: str | None = None,
+    add_scalebar: bool | None = None,
+    scalebar_unit: str | None = None,
+    scalebar_pos: str | None = None,
+) -> dict[str, Any]:
+    """Return display/export state for PNG provenance sidecars.
+
+    ``DisplayRangeState`` deliberately tracks only contrast limits. PNG export
+    also has visual/export choices such as colormap and scale-bar placement;
+    keeping those keys here makes Viewer, Convert, CLI, and writer-level PNGs
+    describe display state in the same shape without treating those choices as
+    numerical processing.
+    """
+    if display_state is None:
+        from probeflow.display_state import DisplayRangeState
+        data: dict[str, Any] = DisplayRangeState(
+            low_pct=float(clip_low),
+            high_pct=float(clip_high),
+        ).to_dict()
+    elif hasattr(display_state, "to_dict"):
+        data = display_state.to_dict()
+    else:
+        data = dict(display_state)
+
+    if colormap is not None:
+        data["colormap"] = str(colormap)
+    if add_scalebar is not None:
+        data["add_scalebar"] = bool(add_scalebar)
+    if scalebar_unit is not None:
+        data["scalebar_unit"] = str(scalebar_unit)
+    if scalebar_pos is not None:
+        data["scalebar_pos"] = str(scalebar_pos)
+    return data
+
+
 def _source_id(source_file: str | None) -> str | None:
     if not source_file:
         return None
