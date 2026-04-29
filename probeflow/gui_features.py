@@ -21,6 +21,8 @@ Future Codex/Claude/readthrough note:
 from __future__ import annotations
 
 import numpy as np
+import os as _os
+_os.environ.setdefault("QT_API", "pyside6")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
@@ -145,7 +147,7 @@ class FeaturesPanel(QWidget):
         lay.setContentsMargins(8, 8, 8, 4)
         lay.setSpacing(6)
 
-        self._title = QLabel("Features - load a scan from the Browse tab, then run an analysis.")
+        self._title = QLabel("FeatureCounting - load a scan from the Browse tab, then run an analysis.")
         self._title.setFont(QFont("Helvetica", 11, QFont.Bold))
         self._title.setWordWrap(True)
         lay.addWidget(self._title)
@@ -170,6 +172,12 @@ class FeaturesPanel(QWidget):
         self._results_table.setFixedHeight(160)
         self._results_table.setFont(QFont("Helvetica", 9))
         lay.addWidget(self._results_table)
+
+        powered = QLabel("Powered by UniMR")
+        powered.setFont(QFont("Helvetica", 8))
+        powered.setAlignment(Qt.AlignCenter)
+        powered.setStyleSheet("color: #888;")
+        lay.addWidget(powered)
 
     def load_entry(self, entry, plane_idx: int, arr: np.ndarray,
                     pixel_size_m: float):

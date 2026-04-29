@@ -77,6 +77,12 @@ from probeflow.gui_features import (
     _FeaturesWorker,
     _FeaturesWorkerSignals,
 )
+from probeflow.gui_tv import (
+    TVPanel,
+    TVSidebar,
+    _TVWorker,
+    _TVWorkerSignals,
+)
 from probeflow.scan import SUPPORTED_SUFFIXES, load_scan
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -3404,8 +3410,10 @@ class ProbeFlowWindow(QMainWindow):
         tab_lay.setSpacing(0)
         self._tab_browse   = QPushButton("Browse")
         self._tab_convert  = QPushButton("Convert")
-        self._tab_features = QPushButton("Features")
-        for btn in (self._tab_browse, self._tab_convert, self._tab_features):
+        self._tab_features = QPushButton("FeatureCounting")
+        self._tab_tv       = QPushButton("TV-denoise")
+        for btn in (self._tab_browse, self._tab_convert, self._tab_features,
+                    self._tab_tv):
             btn.setFont(QFont("Helvetica", 11, QFont.Bold))
             btn.setFixedHeight(44)
             btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -3415,6 +3423,7 @@ class ProbeFlowWindow(QMainWindow):
         self._tab_browse.clicked.connect(lambda: self._switch_mode("browse"))
         self._tab_convert.clicked.connect(lambda: self._switch_mode("convert"))
         self._tab_features.clicked.connect(lambda: self._switch_mode("features"))
+        self._tab_tv.clicked.connect(lambda: self._switch_mode("tv"))
         v_lay.addWidget(self._tab_bar)
 
         # Body splitter
@@ -3440,9 +3449,11 @@ class ProbeFlowWindow(QMainWindow):
 
         self._conv_panel    = ConvertPanel(t, self._cfg)
         self._features_panel = FeaturesPanel(t)
+        self._tv_panel       = TVPanel(t)
         self._content_stack.addWidget(browse_split)
         self._content_stack.addWidget(self._conv_panel)
         self._content_stack.addWidget(self._features_panel)
+        self._content_stack.addWidget(self._tv_panel)
         self._splitter.addWidget(self._content_stack)
 
         # ── Right: sidebar stack ───────────────────────────────────────────────
@@ -3451,9 +3462,11 @@ class ProbeFlowWindow(QMainWindow):
         self._browse_info      = BrowseInfoPanel(t, self._cfg)
         self._convert_sidebar  = ConvertSidebar(t, self._cfg)
         self._features_sidebar = FeaturesSidebar(t)
+        self._tv_sidebar       = TVSidebar(t)
         self._sidebar_stack.addWidget(self._browse_info)
         self._sidebar_stack.addWidget(self._convert_sidebar)
         self._sidebar_stack.addWidget(self._features_sidebar)
+        self._sidebar_stack.addWidget(self._tv_sidebar)
         self._splitter.addWidget(self._sidebar_stack)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 0)
@@ -3462,6 +3475,16 @@ class ProbeFlowWindow(QMainWindow):
         self._features_pool    = QThreadPool.globalInstance()
         self._features_signals = _FeaturesWorkerSignals()
         self._features_signals.finished.connect(self._on_features_finished)
+
+        # TV-denoise tab plumbing
+        self._tv_pool    = QThreadPool.globalInstance()
+        self._tv_signals = _TVWorkerSignals()
+        self._tv_signals.finished.connect(self._on_tv_finished)
+        self._tv_sidebar.load_from_browse_requested.connect(
+            self._on_tv_load_from_browse)
+        self._tv_sidebar.run_requested.connect(self._on_tv_run)
+        self._tv_sidebar.revert_requested.connect(self._on_tv_revert)
+        self._tv_sidebar.save_png_requested.connect(self._on_tv_save_png)
 
         # Wire signals
         self._browse_tools.open_folder_requested.connect(self._open_browse_folder)
@@ -3509,7 +3532,15 @@ class ProbeFlowWindow(QMainWindow):
                 self._status_bar.showMessage(
                     "Pick a scan in Browse, then 'Load primary scan from Browse'")
             else:
-                self._status_bar.showMessage("Features — pick a mode and Run")
+                self._status_bar.showMessage("FeatureCounting — pick a mode and Run")
+        elif mode == "tv":
+            self._content_stack.setCurrentIndex(3)
+            self._sidebar_stack.setCurrentIndex(3)
+            if self._tv_panel.current_array() is None:
+                self._status_bar.showMessage(
+                    "Pick a scan in Browse, then 'Load primary scan from Browse'")
+            else:
+                self._status_bar.showMessage("TV-denoise — adjust parameters and Run")
         else:
             self._content_stack.setCurrentIndex(1)
             self._sidebar_stack.setCurrentIndex(1)
@@ -3520,7 +3551,8 @@ class ProbeFlowWindow(QMainWindow):
         t = THEMES["dark" if self._dark else "light"]
         for btn, name in ((self._tab_browse, "browse"),
                           (self._tab_convert, "convert"),
-                          (self._tab_features, "features")):
+                          (self._tab_features, "features"),
+                          (self._tab_tv, "tv")):
             active = (self._mode == name)
             if active:
                 btn.setStyleSheet(f"""
@@ -3692,7 +3724,7 @@ class ProbeFlowWindow(QMainWindow):
             self._features_panel.load_entry(entry, plane_idx, arr, px_m)
             self._features_sidebar.set_status(
                 f"Loaded {entry.stem} (plane {plane_idx})")
-            self._status_bar.showMessage(f"{entry.stem} sent to Features")
+            self._status_bar.showMessage(f"{entry.stem} sent to FeatureCounting")
 
         elif action == "export_metadata_csv":
             try:
@@ -3752,7 +3784,7 @@ class ProbeFlowWindow(QMainWindow):
         primary = self._grid.get_primary()
         if not primary:
             self._features_sidebar.set_status("Select a scan in the Browse tab first.")
-            self._status_bar.showMessage("Pick a scan in Browse to load it into Features")
+            self._status_bar.showMessage("Pick a scan in Browse to load it into FeatureCounting")
             return
         entry = next((e for e in self._grid.get_entries() if e.stem == primary), None)
         if not entry or isinstance(entry, VertFile):
@@ -3860,6 +3892,95 @@ class ProbeFlowWindow(QMainWindow):
             self._status_bar.showMessage(f"Exported {kind} → {out_path}")
         except Exception as exc:
             self._features_sidebar.set_status(f"Export failed: {exc}")
+
+    # ── TV-denoise tab handlers ────────────────────────────────────────────────
+    def _on_tv_load_from_browse(self):
+        primary = self._grid.get_primary()
+        if not primary:
+            self._tv_sidebar.set_status("Select a scan in the Browse tab first.")
+            self._status_bar.showMessage("Pick a scan in Browse to load it into TV-denoise")
+            return
+        entry = next((e for e in self._grid.get_entries() if e.stem == primary), None)
+        if not entry or isinstance(entry, VertFile):
+            self._tv_sidebar.set_status("Selected entry is not a topography scan.")
+            return
+        plane_idx = self._tv_sidebar.plane_index()
+        try:
+            _scan = load_scan(entry.path)
+            if plane_idx >= _scan.n_planes:
+                plane_idx = 0
+            arr = _scan.planes[plane_idx]
+            w_m, h_m = _scan.scan_range_m
+        except Exception as exc:
+            self._tv_sidebar.set_status(f"Could not read scan: {exc}")
+            return
+        if arr is None:
+            self._tv_sidebar.set_status("Could not read scan plane.")
+            return
+        Ny, Nx = arr.shape
+        if Nx <= 0 or Ny <= 0 or w_m <= 0 or h_m <= 0:
+            px_m = 1e-10
+        else:
+            px_m = float(np.sqrt((w_m / Nx) * (h_m / Ny)))
+        self._tv_panel.load_entry(entry, plane_idx, arr, px_m)
+        self._tv_sidebar.set_status(
+            f"Loaded {entry.stem} (plane {plane_idx}). Adjust parameters and Run.")
+
+    def _on_tv_run(self):
+        arr = self._tv_panel.current_array()
+        if arr is None:
+            self._tv_sidebar.set_status("Load a scan first.")
+            return
+        params = self._tv_sidebar.params()
+        self._tv_sidebar.set_running(True)
+        self._tv_sidebar.set_status(f"Running TV-denoise ({params['method']})…")
+        worker = _TVWorker(arr, params, self._tv_signals)
+        self._tv_pool.start(worker)
+
+    def _on_tv_finished(self, result, error: str):
+        self._tv_sidebar.set_running(False)
+        if error:
+            self._tv_sidebar.set_status(f"TV-denoise failed: {error}")
+            self._status_bar.showMessage(f"TV-denoise failed: {error}")
+            return
+        self._tv_panel.set_denoised(result)
+        self._tv_sidebar.set_status("Done. Save the denoised PNG, or Run again.")
+
+    def _on_tv_revert(self):
+        self._tv_panel.set_denoised(None)
+        self._tv_sidebar.set_status("Reverted to original.")
+
+    def _on_tv_save_png(self):
+        out = self._tv_panel.current_denoised()
+        if out is None:
+            self._tv_sidebar.set_status("Run TV-denoise first.")
+            return
+        entry = self._tv_panel.current_entry()
+        plane_idx = self._tv_panel.current_plane_idx()
+        suggested = (Path.home() /
+                     f"{entry.stem if entry else 'tv'}_p{plane_idx}_tvdenoise.png")
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save denoised PNG", str(suggested), "PNG (*.png)")
+        if not out_path:
+            return
+        try:
+            from probeflow.processing import export_png
+            from probeflow.writers.png import lut_from_matplotlib
+            px_m = self._tv_panel.current_pixel_size()
+            Ny, Nx = out.shape
+            scan_range_m = (px_m * Nx, px_m * Ny)
+            export_png(
+                out, out_path, "gray", 1.0, 99.0,
+                lut_fn=lut_from_matplotlib,
+                scan_range_m=scan_range_m,
+                add_scalebar=True,
+                scalebar_unit="nm",
+                scalebar_pos="bottom-right",
+            )
+            self._tv_sidebar.set_status(f"Saved → {out_path}")
+            self._status_bar.showMessage(f"Saved {out_path}")
+        except Exception as exc:
+            self._tv_sidebar.set_status(f"Save failed: {exc}")
 
     def _open_viewer(self, entry):
         t = THEMES["dark" if self._dark else "light"]

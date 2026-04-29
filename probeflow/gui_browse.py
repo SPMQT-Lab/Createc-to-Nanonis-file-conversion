@@ -123,7 +123,7 @@ class ScanCard(_BrowseCard):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        a_features = QAction("Send to Features", self)
+        a_features = QAction("Send to FeatureCounting", self)
         a_features.triggered.connect(
             lambda: self.context_action_requested.emit(self.entry, "features"))
         menu.addAction(a_features)
