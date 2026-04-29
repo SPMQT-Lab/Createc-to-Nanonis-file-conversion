@@ -20,6 +20,7 @@ from probeflow.indexing import (
     split_indexed_items,
 )
 from probeflow.gui import (
+    _card_meta_str,
     _scan_items_to_sxm,
     _spec_items_to_vert,
     BrowseInfoPanel,
@@ -29,6 +30,7 @@ from probeflow.gui import (
     load_config,
     Navbar,
     normalise_gui_font_size,
+    render_scan_image,
     render_scan_thumbnail,
     render_with_processing,
     resolve_thumbnail_plane_index,
@@ -123,6 +125,15 @@ class TestImageBrowserItems:
 # ── Test A2: large Viewer rendering preserves measured pixels ────────────────
 
 class TestViewerRenderSizing:
+    def test_scan_render_helper_preserves_native_createc_preview_size(self):
+        img = render_scan_image(
+            scan_path=TESTDATA / "createc_scan_preview_120nm.dat",
+            size=None,
+        )
+
+        assert img is not None
+        assert img.size == (63, 64)
+
     def test_scan_thumbnail_does_not_upscale_by_default(self):
         img = render_scan_thumbnail(
             TESTDATA / "sxm_moire_10nm.sxm",
@@ -165,6 +176,36 @@ class TestViewerRenderSizing:
         dlg.close()
         dlg.deleteLater()
 
+    def test_small_viewer_image_opens_with_integer_zoom(self, qapp, monkeypatch):
+        from PySide6.QtGui import QPixmap
+        from probeflow.gui import ImageViewerDialog, THEMES
+
+        monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+        entry = SxmFile(
+            path=TESTDATA / "createc_scan_preview_120nm.dat",
+            stem="createc_scan_preview_120nm",
+        )
+        dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+        dlg._scan_range_m = (120e-9, 120e-9)
+        dlg.show()
+        qapp.processEvents()
+
+        dlg._on_loaded(QPixmap(63, 64), dlg._token)
+        qapp.processEvents()
+
+        assert dlg._zoom_lbl.zoom() > 1
+        assert dlg._zoom_lbl.size().width() % 63 == 0
+        assert dlg._zoom_lbl.size().height() % 64 == 0
+
+        dlg._zoom_lbl.reset_zoom()
+        qapp.processEvents()
+
+        assert dlg._zoom_lbl.size().width() == 63
+        assert dlg._zoom_lbl.size().height() == 64
+
+        dlg.close()
+        dlg.deleteLater()
+
     def test_processed_viewer_render_defaults_to_native_pixel_size(self):
         from probeflow.scan import load_scan
 
@@ -180,6 +221,44 @@ class TestViewerRenderSizing:
 
         assert img is not None
         assert img.size == (160, 160)
+
+    def test_scan_workers_share_render_helper(self, monkeypatch):
+        from PIL import Image
+        import probeflow.gui as gui_mod
+
+        calls = []
+
+        class FakeScan:
+            plane_names = ["Z forward", "Current forward"]
+            n_planes = 2
+            planes = [np.zeros((4, 4)), np.ones((4, 4))]
+
+        def fake_render(**kwargs):
+            calls.append(kwargs)
+            return Image.new("RGB", (2, 2))
+
+        monkeypatch.setattr(gui_mod, "load_scan", lambda _path: FakeScan())
+        monkeypatch.setattr(gui_mod, "render_scan_image", fake_render)
+
+        entry = SxmFile(path=Path("scan.dat"), stem="scan")
+        gui_mod.ThumbnailLoader(
+            entry, "gray", object(), 148, 116,
+            thumbnail_channel="Current",
+        ).run()
+        gui_mod.ChannelLoader(
+            entry, 1, "gray", object(), 124, 98, gui_mod.ChannelSignals(),
+        ).run()
+        gui_mod.ViewerLoader(
+            entry, "gray", object(), None, plane_idx=1,
+        ).run()
+
+        assert len(calls) == 3
+        assert calls[0]["arr"] is FakeScan.planes[1]
+        assert calls[0]["size"] == (148, 116)
+        assert calls[1]["scan_path"] == entry.path
+        assert calls[1]["size"] == (124, 98)
+        assert calls[2]["scan_path"] == entry.path
+        assert calls[2]["size"] is None
 
 
 class TestThumbnailChannelResolution:
@@ -573,6 +652,19 @@ class TestScanItemsToSxm:
                           shape=(4, 4), setpoint=4.4e-10)  # 440 pA
         result = _scan_items_to_sxm([item])
         assert abs(result[0].current_pa - 440.0) < 1e-6
+
+    def test_unknown_setpoint_formats_as_unknown_current(self):
+        entry = SxmFile(
+            path=TESTDATA / "createc_scan_island_60nm.dat",
+            stem="createc_scan_island_60nm",
+            Nx=511,
+            Ny=512,
+            scan_nm=60.0,
+            bias_mv=1213.0,
+            current_pa=None,
+        )
+
+        assert "I: ?" in _card_meta_str(entry)
 
     def test_scan_range_converted_to_nm(self):
         item = _make_item("a.sxm", item_type="scan", source_format="nanonis_sxm",

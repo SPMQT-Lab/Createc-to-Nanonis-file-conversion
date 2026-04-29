@@ -207,3 +207,11 @@ class TestCreatecSetpointExtraction:
     def test_newer_createc_fixture_uses_setpoint_header(self):
         meta = read_scan_metadata(TESTDATA / "createc_scan_overview_240nm_pos.dat")
         assert meta.setpoint == pytest.approx(1.01e-10)
+
+    def test_createc_preview_fixture_uses_setpoint_header(self):
+        meta = read_scan_metadata(TESTDATA / "createc_scan_preview_120nm.dat")
+        assert meta.setpoint == pytest.approx(1.01e-10)
+
+    def test_createc_zero_setpoint_fixture_remains_unknown(self):
+        meta = read_scan_metadata(TESTDATA / "createc_scan_island_60nm.dat")
+        assert meta.setpoint is None

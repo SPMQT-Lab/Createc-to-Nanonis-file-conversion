@@ -419,12 +419,53 @@ def render_scan_thumbnail(
     If *vmin* and *vmax* are provided, they are used directly (manual mode).
     Otherwise *clip_low*/*clip_high* percentiles are applied (percentile mode).
     """
+    return render_scan_image(
+        scan_path=scan_path,
+        plane_idx=plane_idx,
+        colormap=colormap,
+        clip_low=clip_low,
+        clip_high=clip_high,
+        size=size,
+        vmin=vmin,
+        vmax=vmax,
+        allow_upscale=allow_upscale,
+    )
+
+
+def render_scan_image(
+    scan_path: Optional[Path] = None,
+    arr: Optional[np.ndarray] = None,
+    plane_idx: int = 0,
+    colormap: str = "gray",
+    clip_low: float = 1.0,
+    clip_high: float = 99.0,
+    size: Optional[tuple[int, int]] = (148, 116),
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    allow_upscale: bool = False,
+    processing: Optional[dict] = None,
+) -> Optional[Image.Image]:
+    """Render a scan plane for all GUI image surfaces.
+
+    Browse thumbnails, right-panel channel previews, and the full image viewer
+    intentionally share this path so only sizing policy differs between them.
+    """
     try:
-        scan = load_scan(scan_path)
-        if plane_idx >= scan.n_planes:
+        if arr is None:
+            if scan_path is None:
+                return None
+            scan = load_scan(scan_path)
+            if plane_idx >= scan.n_planes:
+                return None
+            arr = scan.planes[plane_idx]
+        if arr is None:
             return None
+        if processing:
+            return render_with_processing(
+                arr, colormap, clip_low, clip_high, processing,
+                size=size, vmin=vmin, vmax=vmax, allow_upscale=allow_upscale)
         return _render_scan_array(
-            scan.planes[plane_idx], colormap, clip_low, clip_high,
+            arr, colormap, clip_low, clip_high,
             size=size, vmin=vmin, vmax=vmax, allow_upscale=allow_upscale)
     except Exception:
         return None
@@ -718,23 +759,14 @@ class ThumbnailLoader(QRunnable):
             arr = scan.planes[plane_idx] if plane_idx < scan.n_planes else None
         except Exception:
             arr = None
-        try:
-            if self.processing:
-                if arr is not None:
-                    img = render_with_processing(
-                        arr, self.colormap, self.clip_low, self.clip_high,
-                        self.processing, size=(self.w, self.h))
-                else:
-                    img = None
-            else:
-                img = (
-                    _render_scan_array(
-                        arr, self.colormap, self.clip_low, self.clip_high,
-                        size=(self.w, self.h))
-                    if arr is not None else None
-                )
-        except Exception:
-            img = None
+        img = render_scan_image(
+            arr=arr,
+            colormap=self.colormap,
+            clip_low=self.clip_low,
+            clip_high=self.clip_high,
+            size=(self.w, self.h),
+            processing=self.processing or None,
+        )
         if img is not None:
             self.signals.loaded.emit(self.entry.stem, pil_to_pixmap(img), self.token)
 
@@ -782,22 +814,15 @@ class ChannelLoader(QRunnable):
         self.processing = processing or {}
 
     def run(self):
-        if self.processing:
-            try:
-                scan = load_scan(self.entry.path)
-                arr = scan.planes[self.idx] if self.idx < scan.n_planes else None
-            except Exception:
-                arr = None
-            if arr is not None:
-                img = render_with_processing(
-                    arr, self.colormap, self.clip_low, self.clip_high,
-                    self.processing, size=(self.w, self.h))
-            else:
-                img = None
-        else:
-            img = render_scan_thumbnail(self.entry.path, self.idx, self.colormap,
-                                        self.clip_low, self.clip_high,
-                                        size=(self.w, self.h))
+        img = render_scan_image(
+            scan_path=self.entry.path,
+            plane_idx=self.idx,
+            colormap=self.colormap,
+            clip_low=self.clip_low,
+            clip_high=self.clip_high,
+            size=(self.w, self.h),
+            processing=self.processing or None,
+        )
         if img is not None:
             self.signals.loaded.emit(self.idx, pil_to_pixmap(img), self.token)
 
@@ -828,27 +853,18 @@ class ViewerLoader(QRunnable):
         self.vmax       = vmax
 
     def run(self):
-        if self.processing:
-            try:
-                scan = load_scan(self.entry.path)
-                arr = scan.planes[self.plane_idx] if self.plane_idx < scan.n_planes else None
-            except Exception:
-                arr = None
-            if arr is not None:
-                img = render_with_processing(arr, self.colormap,
-                                             self.clip_low, self.clip_high,
-                                             self.processing,
-                                             size=self.size,
-                                             vmin=self.vmin, vmax=self.vmax,
-                                             allow_upscale=False)
-            else:
-                img = None
-        else:
-            img = render_scan_thumbnail(self.entry.path, self.plane_idx,
-                                        self.colormap, self.clip_low, self.clip_high,
-                                        size=self.size,
-                                        vmin=self.vmin, vmax=self.vmax,
-                                        allow_upscale=False)
+        img = render_scan_image(
+            scan_path=self.entry.path,
+            plane_idx=self.plane_idx,
+            colormap=self.colormap,
+            clip_low=self.clip_low,
+            clip_high=self.clip_high,
+            size=self.size,
+            vmin=self.vmin,
+            vmax=self.vmax,
+            allow_upscale=False,
+            processing=self.processing or None,
+        )
         if img is not None:
             self.signals.loaded.emit(pil_to_pixmap(img), self.token)
 
@@ -1717,8 +1733,10 @@ class _ZoomLabel(QLabel):
             else Qt.ArrowCursor
         )
 
-    def set_source(self, pixmap: QPixmap):
+    def set_source(self, pixmap: QPixmap, zoom: Optional[float] = None):
         self._pixmap_orig = pixmap
+        if zoom is not None:
+            self._zoom = max(0.25, min(8.0, float(zoom)))
         self._apply_zoom()
 
     def zoom_by(self, factor: float):
@@ -1728,6 +1746,9 @@ class _ZoomLabel(QLabel):
     def reset_zoom(self):
         self._zoom = 1.0
         self._apply_zoom()
+
+    def zoom(self) -> float:
+        return self._zoom
 
     def set_markers(self, markers: list[dict]):
         self._markers = markers
@@ -2309,6 +2330,7 @@ class ImageViewerDialog(QDialog):
         self._zero_pick_mode: str = "offset"
         self._zero_plane_points_px: list[tuple[int, int]] = []
         self._pending_initial_plane_idx: Optional[int] = max(0, int(initial_plane_idx))
+        self._reset_zoom_on_next_load = True
 
         self._build()
         self._processing_panel.set_state(self._processing)
@@ -2736,11 +2758,13 @@ class ImageViewerDialog(QDialog):
     def _go_prev(self):
         if self._idx > 0:
             self._idx -= 1
+            self._reset_zoom_on_next_load = True
             self._load_current()
 
     def _go_next(self):
         if self._idx < len(self._entries) - 1:
             self._idx += 1
+            self._reset_zoom_on_next_load = True
             self._load_current()
 
     # ── Load / render ──────────────────────────────────────────────────────────
@@ -3295,6 +3319,7 @@ class ImageViewerDialog(QDialog):
     def _on_channel_changed(self, _: int):
         # Different channels have different physical units — reset manual limits.
         self._drs.reset(self._clip_low, self._clip_high)
+        self._reset_zoom_on_next_load = True
         self._load_current()
 
     @Slot(QPixmap, object)
@@ -3302,9 +3327,31 @@ class ImageViewerDialog(QDialog):
         if token is not self._token:
             return
         self._zoom_lbl.setText("")
-        self._zoom_lbl.set_source(pixmap)
+        initial_zoom = (
+            self._initial_integer_zoom_for_pixmap(pixmap)
+            if self._reset_zoom_on_next_load else None
+        )
+        self._reset_zoom_on_next_load = False
+        self._zoom_lbl.set_source(pixmap, zoom=initial_zoom)
         self._refresh_zero_markers()
         self._refresh_scale_bar()
+
+    def _initial_integer_zoom_for_pixmap(self, pixmap: QPixmap) -> int:
+        """Choose an honest, nearest-neighbour initial zoom for tiny rasters."""
+        if pixmap.isNull():
+            return 1
+        w, h = pixmap.width(), pixmap.height()
+        if w <= 0 or h <= 0:
+            return 1
+        # Normal SPM rasters should open at 1:1. Only very small surveys need a
+        # display-only integer enlargement to avoid becoming unreadable.
+        if max(w, h) >= 128:
+            return 1
+        viewport = self._scroll_area.viewport().size()
+        avail_w = max(1, viewport.width() - RulerWidget.THICKNESS_PX - 12)
+        avail_h = max(1, viewport.height() - RulerWidget.THICKNESS_PX - 12)
+        fit = int(np.floor(min(avail_w / w, avail_h / h)))
+        return max(1, min(8, fit))
 
     # ── Scale-bar slots ────────────────────────────────────────────────────────
     def _on_scale_bar_toggled(self, on: bool):
