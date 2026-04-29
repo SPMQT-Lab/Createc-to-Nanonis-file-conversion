@@ -176,7 +176,7 @@ class TestViewerRenderSizing:
         dlg.close()
         dlg.deleteLater()
 
-    def test_small_viewer_image_opens_with_integer_zoom(self, qapp, monkeypatch):
+    def test_small_viewer_image_opens_at_native_size(self, qapp, monkeypatch):
         from PySide6.QtGui import QPixmap
         from probeflow.gui import ImageViewerDialog, THEMES
 
@@ -193,15 +193,41 @@ class TestViewerRenderSizing:
         dlg._on_loaded(QPixmap(63, 64), dlg._token)
         qapp.processEvents()
 
-        assert dlg._zoom_lbl.zoom() > 1
-        assert dlg._zoom_lbl.size().width() % 63 == 0
-        assert dlg._zoom_lbl.size().height() % 64 == 0
+        assert dlg._zoom_lbl.zoom() == 1.0
+        assert dlg._zoom_lbl.size().width() == 63
+        assert dlg._zoom_lbl.size().height() == 64
+
+        dlg._zoom_lbl.zoom_by(2.0)
+        qapp.processEvents()
+
+        assert dlg._zoom_lbl.size().width() == 126
+        assert dlg._zoom_lbl.size().height() == 128
 
         dlg._zoom_lbl.reset_zoom()
         qapp.processEvents()
 
         assert dlg._zoom_lbl.size().width() == 63
         assert dlg._zoom_lbl.size().height() == 64
+
+        dlg.close()
+        dlg.deleteLater()
+
+    def test_large_viewer_image_opens_at_native_size(self, qapp, monkeypatch):
+        from PySide6.QtGui import QPixmap
+        from probeflow.gui import ImageViewerDialog, THEMES
+
+        monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+        entry = SxmFile(path=TESTDATA / "createc_scan_hires_survey_99nm.dat",
+                        stem="createc_scan_hires_survey_99nm")
+        dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+        dlg._scan_range_m = (99e-9, 99e-9)
+
+        dlg._on_loaded(QPixmap(1023, 1024), dlg._token)
+        qapp.processEvents()
+
+        assert dlg._zoom_lbl.zoom() == 1.0
+        assert dlg._zoom_lbl.size().width() == 1023
+        assert dlg._zoom_lbl.size().height() == 1024
 
         dlg.close()
         dlg.deleteLater()

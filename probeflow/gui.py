@@ -1733,10 +1733,9 @@ class _ZoomLabel(QLabel):
             else Qt.ArrowCursor
         )
 
-    def set_source(self, pixmap: QPixmap, zoom: Optional[float] = None):
+    def set_source(self, pixmap: QPixmap):
         self._pixmap_orig = pixmap
-        if zoom is not None:
-            self._zoom = max(0.25, min(8.0, float(zoom)))
+        self._zoom = 1.0
         self._apply_zoom()
 
     def zoom_by(self, factor: float):
@@ -2330,7 +2329,6 @@ class ImageViewerDialog(QDialog):
         self._zero_pick_mode: str = "offset"
         self._zero_plane_points_px: list[tuple[int, int]] = []
         self._pending_initial_plane_idx: Optional[int] = max(0, int(initial_plane_idx))
-        self._reset_zoom_on_next_load = True
 
         self._build()
         self._processing_panel.set_state(self._processing)
@@ -2758,13 +2756,11 @@ class ImageViewerDialog(QDialog):
     def _go_prev(self):
         if self._idx > 0:
             self._idx -= 1
-            self._reset_zoom_on_next_load = True
             self._load_current()
 
     def _go_next(self):
         if self._idx < len(self._entries) - 1:
             self._idx += 1
-            self._reset_zoom_on_next_load = True
             self._load_current()
 
     # ── Load / render ──────────────────────────────────────────────────────────
@@ -3319,7 +3315,6 @@ class ImageViewerDialog(QDialog):
     def _on_channel_changed(self, _: int):
         # Different channels have different physical units — reset manual limits.
         self._drs.reset(self._clip_low, self._clip_high)
-        self._reset_zoom_on_next_load = True
         self._load_current()
 
     @Slot(QPixmap, object)
@@ -3327,31 +3322,9 @@ class ImageViewerDialog(QDialog):
         if token is not self._token:
             return
         self._zoom_lbl.setText("")
-        initial_zoom = (
-            self._initial_integer_zoom_for_pixmap(pixmap)
-            if self._reset_zoom_on_next_load else None
-        )
-        self._reset_zoom_on_next_load = False
-        self._zoom_lbl.set_source(pixmap, zoom=initial_zoom)
+        self._zoom_lbl.set_source(pixmap)
         self._refresh_zero_markers()
         self._refresh_scale_bar()
-
-    def _initial_integer_zoom_for_pixmap(self, pixmap: QPixmap) -> int:
-        """Choose an honest, nearest-neighbour initial zoom for tiny rasters."""
-        if pixmap.isNull():
-            return 1
-        w, h = pixmap.width(), pixmap.height()
-        if w <= 0 or h <= 0:
-            return 1
-        # Normal SPM rasters should open at 1:1. Only very small surveys need a
-        # display-only integer enlargement to avoid becoming unreadable.
-        if max(w, h) >= 128:
-            return 1
-        viewport = self._scroll_area.viewport().size()
-        avail_w = max(1, viewport.width() - RulerWidget.THICKNESS_PX - 12)
-        avail_h = max(1, viewport.height() - RulerWidget.THICKNESS_PX - 12)
-        fit = int(np.floor(min(avail_w / w, avail_h / h)))
-        return max(1, min(8, fit))
 
     # ── Scale-bar slots ────────────────────────────────────────────────────────
     def _on_scale_bar_toggled(self, on: bool):
