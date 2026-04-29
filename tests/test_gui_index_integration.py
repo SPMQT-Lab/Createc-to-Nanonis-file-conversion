@@ -100,6 +100,240 @@ def test_gui_compatibility_reexports_remain_available():
     assert ImageViewerDialog.__name__ == "ImageViewerDialog"
     assert callable(render_scan_image)
 
+
+class TestGuiWorkers:
+    def test_thumbnail_loader_selects_requested_plane_and_emits(self, qapp, monkeypatch):
+        from PIL import Image
+        import probeflow.gui_workers as worker_mod
+
+        token = object()
+        calls = {}
+        emitted = []
+
+        class FakeScan:
+            plane_names = ["Z forward", "Current forward"]
+            n_planes = 2
+            planes = [np.zeros((3, 3)), np.ones((3, 3))]
+
+        def fake_render(**kwargs):
+            calls.update(kwargs)
+            return Image.new("RGB", (2, 2))
+
+        monkeypatch.setattr(worker_mod, "load_scan", lambda _path: FakeScan())
+        monkeypatch.setattr(worker_mod, "render_scan_image", fake_render)
+
+        loader = worker_mod.ThumbnailLoader(
+            SxmFile(path=Path("scan.dat"), stem="scan"),
+            "gray",
+            token,
+            148,
+            116,
+            processing={"align_rows": "median"},
+            thumbnail_channel="Current",
+        )
+        loader.signals.loaded.connect(lambda *args: emitted.append(args))
+        loader.run()
+
+        assert calls["arr"] is FakeScan.planes[1]
+        assert "scan_path" not in calls
+        assert calls["size"] == (148, 116)
+        assert calls["processing"] == {"align_rows": "median"}
+        assert len(emitted) == 1
+        assert emitted[0][0] == "scan"
+        assert emitted[0][2] is token
+
+    def test_thumbnail_loader_suppresses_emit_when_render_fails(self, qapp, monkeypatch):
+        import probeflow.gui_workers as worker_mod
+
+        emitted = []
+
+        def fail_load_scan(_path):
+            raise ValueError("bad scan")
+
+        monkeypatch.setattr(worker_mod, "load_scan", fail_load_scan)
+        monkeypatch.setattr(worker_mod, "render_scan_image", lambda **_kwargs: None)
+
+        loader = worker_mod.ThumbnailLoader(
+            SxmFile(path=Path("broken.dat"), stem="broken"),
+            "gray",
+            object(),
+            148,
+            116,
+        )
+        loader.signals.loaded.connect(lambda *args: emitted.append(args))
+        loader.run()
+
+        assert emitted == []
+
+    def test_channel_and_viewer_loaders_preserve_arr_vs_file_semantics(
+        self, qapp, monkeypatch
+    ):
+        from PIL import Image
+        import probeflow.gui_workers as worker_mod
+
+        calls = []
+
+        def fake_render(**kwargs):
+            calls.append(kwargs)
+            return Image.new("RGB", (2, 2))
+
+        monkeypatch.setattr(worker_mod, "render_scan_image", fake_render)
+
+        entry = SxmFile(path=Path("scan.sxm"), stem="scan")
+        arr = np.ones((4, 4))
+        ch_emitted = []
+        ch_signals = worker_mod.ChannelSignals()
+        ch_signals.loaded.connect(lambda *args: ch_emitted.append(args))
+        worker_mod.ChannelLoader(
+            entry,
+            2,
+            "plasma",
+            "channel-token",
+            124,
+            98,
+            ch_signals,
+            processing={"align_rows": "mean"},
+            arr=arr,
+        ).run()
+
+        viewer_arr_emitted = []
+        viewer_arr = worker_mod.ViewerLoader(
+            entry,
+            "gray",
+            "viewer-arr-token",
+            None,
+            plane_idx=1,
+            processing={"align_rows": "median"},
+            arr=arr,
+        )
+        viewer_arr.signals.loaded.connect(lambda *args: viewer_arr_emitted.append(args))
+        viewer_arr.run()
+
+        viewer_file_emitted = []
+        viewer_file = worker_mod.ViewerLoader(
+            entry,
+            "gray",
+            "viewer-file-token",
+            None,
+            plane_idx=1,
+            processing={"align_rows": "median"},
+        )
+        viewer_file.signals.loaded.connect(lambda *args: viewer_file_emitted.append(args))
+        viewer_file.run()
+
+        assert calls[0]["scan_path"] is None
+        assert calls[0]["arr"] is arr
+        assert calls[0]["processing"] == {"align_rows": "mean"}
+        assert calls[1]["scan_path"] is None
+        assert calls[1]["arr"] is arr
+        assert calls[1]["processing"] is None
+        assert calls[2]["scan_path"] == entry.path
+        assert calls[2]["arr"] is None
+        assert calls[2]["processing"] == {"align_rows": "median"}
+        assert ch_emitted[0][0] == 2
+        assert ch_emitted[0][2] == "channel-token"
+        assert viewer_arr_emitted[0][1] == "viewer-arr-token"
+        assert viewer_file_emitted[0][1] == "viewer-file-token"
+
+    def test_spec_thumbnail_loader_emits_only_when_render_succeeds(
+        self, qapp, monkeypatch
+    ):
+        from PIL import Image
+        import probeflow.gui_workers as worker_mod
+
+        calls = []
+        monkeypatch.setattr(
+            worker_mod,
+            "render_spec_thumbnail",
+            lambda *args, **kwargs: calls.append((args, kwargs)) or Image.new("RGB", (2, 2)),
+        )
+
+        emitted = []
+        entry = VertFile(path=Path("spec.VERT"), stem="spec")
+        loader = worker_mod.SpecThumbnailLoader(entry, "token", 120, 80, dark=False)
+        loader.signals.loaded.connect(lambda *args: emitted.append(args))
+        loader.run()
+
+        assert calls[0][0] == (entry.path,)
+        assert calls[0][1] == {"size": (120, 80), "dark": False}
+        assert emitted[0][0] == "spec"
+        assert emitted[0][2] == "token"
+
+        monkeypatch.setattr(worker_mod, "render_spec_thumbnail", lambda *_a, **_k: None)
+        emitted.clear()
+        loader.run()
+
+        assert emitted == []
+
+    def test_conversion_worker_reports_empty_sxm_directory(self, qapp, tmp_path):
+        import probeflow.gui_workers as worker_mod
+
+        logs = []
+        finished = []
+        worker = worker_mod.ConversionWorker(
+            str(tmp_path / "input"),
+            str(tmp_path / "output"),
+            do_png=False,
+            do_sxm=True,
+            clip_low=1.0,
+            clip_high=99.0,
+        )
+        Path(worker.in_dir).mkdir()
+        worker.signals.log_msg.connect(lambda *args: logs.append(args))
+        worker.signals.finished.connect(finished.append)
+
+        worker.run()
+
+        assert any(tag == "warn" and "No .dat files found" in msg for msg, tag in logs)
+        assert finished == [worker.out_dir]
+
+    def test_conversion_worker_records_per_file_sxm_failures(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        import json
+        import probeflow.dat_sxm as dat_sxm_mod
+        import probeflow.gui_workers as worker_mod
+
+        in_dir = tmp_path / "input"
+        out_dir = tmp_path / "output"
+        in_dir.mkdir()
+        good = in_dir / "good.dat"
+        bad = in_dir / "bad.dat"
+        good.write_bytes(b"good")
+        bad.write_bytes(b"bad")
+
+        def fake_convert(dat, sxm_out, cushion_dir, clip_low, clip_high):
+            assert cushion_dir == worker_mod.DEFAULT_CUSHION
+            assert clip_low == 2.0
+            assert clip_high == 98.0
+            if dat.name == "bad.dat":
+                raise ValueError("decode failed")
+            (sxm_out / f"{dat.stem}.sxm").write_bytes(b"sxm")
+
+        monkeypatch.setattr(dat_sxm_mod, "convert_dat_to_sxm", fake_convert)
+
+        logs = []
+        finished = []
+        worker = worker_mod.ConversionWorker(
+            str(in_dir),
+            str(out_dir),
+            do_png=False,
+            do_sxm=True,
+            clip_low=2.0,
+            clip_high=98.0,
+        )
+        worker.signals.log_msg.connect(lambda *args: logs.append(args))
+        worker.signals.finished.connect(finished.append)
+
+        worker.run()
+
+        errors_path = out_dir / "sxm" / "errors.json"
+        assert (out_dir / "sxm" / "good.sxm").exists()
+        assert json.loads(errors_path.read_text()) == {"bad.dat": "decode failed"}
+        assert any(tag == "err" and "FAILED bad.dat" in msg for msg, tag in logs)
+        assert any(tag == "warn" and "1 file(s) failed" in msg for msg, tag in logs)
+        assert finished == [str(out_dir)]
+
 TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
 
 
