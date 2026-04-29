@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import zlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +16,9 @@ from probeflow.readers.createc_dat import (
     scale_channels_for_scan,
 )
 from probeflow.scan import load_scan
+
+TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+QPLUS_10CH_DAT = TESTDATA / "createc_scan_qplus_10ch_afm.dat"
 
 
 def test_report_records_trim_first_column_and_tail(first_sample_dat):
@@ -155,6 +159,27 @@ def test_implausible_header_channel_count_falls_back_to_payload(tmp_path):
     report = read_createc_dat_report(dat, include_raw=False)
 
     assert report.detected_channel_count == 4
+
+
+def test_anonymized_qplus_fixture_decodes_all_10_channels():
+    report = read_createc_dat_report(QPLUS_10CH_DAT)
+    scan = load_scan(QPLUS_10CH_DAT)
+
+    assert report.detected_channel_count == 10
+    assert scan.n_planes == 10
+    assert report.ignored_tail_float_count == 1056
+    assert scan.plane_names == [
+        "Z forward",
+        "Current forward",
+        "Aux6 forward",
+        "Aux7 forward",
+        "Aux8 forward",
+        "Z backward",
+        "Current backward",
+        "Aux6 backward",
+        "Aux7 backward",
+        "Aux8 backward",
+    ]
 
 
 def test_metadata_uses_createc_report_without_constructing_scan(

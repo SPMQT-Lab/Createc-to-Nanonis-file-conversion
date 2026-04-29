@@ -17,9 +17,11 @@ TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
 _EXPECTED = {
     "createc_scan_step_20nm.dat":     FileType.CREATEC_IMAGE,
     "createc_scan_terrace_109nm.dat": FileType.CREATEC_IMAGE,
+    "createc_scan_qplus_10ch_afm.dat": FileType.CREATEC_IMAGE,
     "createc_ivt_telegraph_300mv_a.VERT": FileType.CREATEC_SPEC,
     "createc_ivt_telegraph_300mv_b.VERT": FileType.CREATEC_SPEC,
     "createc_ivt_telegraph_450mv.VERT":   FileType.CREATEC_SPEC,
+    "createc_vert_didz_image_state.VERT": FileType.CREATEC_SPEC,
     "nanonis_kelvin_parabola_500mv.dat":  FileType.NANONIS_SPEC,
     "nanonis_sts_15mv.dat":         FileType.NANONIS_SPEC,
     "sxm_moire_10nm.sxm":                 FileType.NANONIS_IMAGE,

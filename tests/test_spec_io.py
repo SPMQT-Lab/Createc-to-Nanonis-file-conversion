@@ -18,6 +18,7 @@ VERT_TIME_TRACE  = DATA_DIR / "A180201.152542.M0001.VERT"
 VERT_BIAS_SWEEP  = DATA_DIR / "A180201.151737.M0001.VERT"
 VERT_TT_50MV     = DATA_DIR / "A180201.124928.VERT"       # time trace, -50 mV
 VERT_TT_450MV    = DATA_DIR / "A180208.194656.M0003.VERT"  # time trace, -450 mV
+VERT_DIDZ_FIXTURE = Path(__file__).resolve().parent.parent / "anonymised_testdata" / "createc_vert_didz_image_state.VERT"
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -724,6 +725,26 @@ class TestMeasurementInterpretation:
         assert spec.metadata["measurement_family"] == "iz"
         assert spec.metadata["derivative_label"] == "dI/dz"
         assert meta.metadata["measurement_family"] == "iz"
+
+    def test_anonymized_didz_fixture_preserves_all_channels(self):
+        spec = read_spec_file(VERT_DIDZ_FIXTURE)
+        meta = read_spec_metadata(VERT_DIDZ_FIXTURE)
+
+        assert spec.metadata["sweep_type"] == "bias_sweep"
+        assert spec.metadata["measurement_family"] == "iz"
+        assert spec.metadata["derivative_label"] == "dI/dz"
+        assert spec.channel_order == [
+            "I",
+            "Z",
+            "V",
+            "X",
+            "dI/dV",
+            "ADC0",
+            "NA02",
+            "di_q",
+            "Raw column 9",
+        ]
+        assert meta.channels == tuple(spec.channel_order)
 
     def test_measurement_mode_override_takes_precedence(self, tmp_path):
         f = _write_createc_vert(

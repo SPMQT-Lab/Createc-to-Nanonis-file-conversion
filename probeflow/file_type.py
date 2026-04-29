@@ -45,8 +45,8 @@ def sniff_file_type(path) -> FileType:
     if head.startswith(b"Experiment\t"):
         return FileType.NANONIS_SPEC
 
-    # Createc spec (.VERT): starts with [ParVERT30].
-    if head.startswith(b"[ParVERT30]"):
+    # Createc spec (.VERT): starts with [ParVERT30] or [ParVERT32].
+    if head.startswith((b"[ParVERT30]", b"[ParVERT32]")):
         return FileType.CREATEC_SPEC
 
     # Createc image (.dat): starts with [Paramco32].
