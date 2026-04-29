@@ -53,14 +53,27 @@ def _build_comment(scan: Scan, out_path=None) -> str:
     return "\n".join(lines)
 
 
-def write_sxm(scan: Scan, out_path) -> None:
+def write_sxm(
+    scan: Scan,
+    out_path,
+    *,
+    cushion_dir=None,
+    clip_low: float = 1.0,
+    clip_high: float = 99.0,
+) -> None:
     out_path = Path(out_path)
     if scan.source_path is not None:
         check_overwrite(scan.source_path, out_path)
     if scan.source_format == "sxm":
         _write_from_sxm(scan, out_path)
     elif scan.source_format == "dat":
-        _write_from_dat(scan, out_path)
+        _write_from_dat(
+            scan,
+            out_path,
+            cushion_dir=cushion_dir,
+            clip_low=clip_low,
+            clip_high=clip_high,
+        )
     else:
         raise ValueError(
             f"Cannot write .sxm from source_format={scan.source_format!r}"
@@ -78,7 +91,14 @@ def _write_from_sxm(scan: Scan, out_path: Path) -> None:
 
 # ─── DAT-sourced reconstruction path ────────────────────────────────────────
 
-def _write_from_dat(scan: Scan, out_path: Path) -> None:
+def _write_from_dat(
+    scan: Scan,
+    out_path: Path,
+    *,
+    cushion_dir=None,
+    clip_low: float = 1.0,
+    clip_high: float = 99.0,
+) -> None:
     # Lazy-import to avoid pulling in the full dat_sxm machinery on every
     # probeflow.scan import — dat_sxm has heavy top-level imports.
     from probeflow.dat_sxm import (
@@ -114,7 +134,7 @@ def _write_from_dat(scan: Scan, out_path: Path) -> None:
 
     sxm_hdr = construct_hdr(
         hdr, scan.source_path, num_chan_for_header,
-        clip_low=1.0, clip_high=99.0,
+        clip_low=clip_low, clip_high=clip_high,
     )
     sxm_hdr["COMMENT"] = _build_comment(scan, out_path)
 
@@ -128,7 +148,8 @@ def _write_from_dat(scan: Scan, out_path: Path) -> None:
         ("Current", "A", "backward", to_f32(BC)),
     ]
 
-    layout, header_format = load_layout_and_format(DEFAULT_CUSHION_DIR)
+    layout_dir = Path(cushion_dir) if cushion_dir is not None else DEFAULT_CUSHION_DIR
+    layout, header_format = load_layout_and_format(layout_dir)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     reconstruct_from_hdr_imgs(
         hdr=sxm_hdr,

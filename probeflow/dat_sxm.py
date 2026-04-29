@@ -13,6 +13,8 @@ import numpy as np
 
 from .common import _f, setup_logging
 from .readers.createc_dat import read_createc_dat_report
+from .scan import load_scan
+from .writers.sxm import write_sxm
 
 log = logging.getLogger(__name__)
 
@@ -484,23 +486,24 @@ def convert_dat_to_sxm(
     clip_low: float = 1.0,
     clip_high: float = 99.0,
 ) -> None:
-    """Convert a single .dat file to .sxm and write it to out_dir."""
-    hdr, imgs, num_chan = process_dat(dat, clip_low=clip_low, clip_high=clip_high)
-    layout, header_format = load_layout_and_format(cushion_dir)
+    """Convert a single .dat file to .sxm and write it to out_dir.
 
+    The public conversion path goes through ``load_scan()`` so DAT inputs get
+    the same reader dispatch and validation as the rest of ProbeFlow, then uses
+    the shared SXM writer for binary reconstruction.
+    """
+    dat = Path(dat)
+    out_dir = Path(out_dir)
     out_path = out_dir / (dat.stem + ".sxm")
-    data_offset, payload_len = reconstruct_from_hdr_imgs(
-        hdr=hdr,
-        imgs=imgs,
-        header_format=header_format,
-        post_end_bytes=layout["post_end_bytes"],
-        pre_payload_bytes=layout["pre_payload_bytes"],
-        out_path=out_path,
-        tail_bytes=layout["tail_bytes"],
-        force_data_offset=layout["data_offset"],
-        filler_char=b" ",
+
+    scan = load_scan(dat)
+    write_sxm(
+        scan,
+        out_path,
+        cushion_dir=cushion_dir,
+        clip_low=clip_low,
+        clip_high=clip_high,
     )
-    log.debug("%s: data_offset=%d, payload_len=%d", dat.name, data_offset, payload_len)
     log.info("[OK] %s → %s", dat.name, out_path.name)
 
 

@@ -109,6 +109,43 @@ class TestProcessDat:
 # ─── SXM full conversion ──────────────────────────────────────────────────────
 
 class TestConvertDatToSxm:
+    def test_uses_validated_scan_writer_path(self, tmp_path, monkeypatch):
+        import probeflow.dat_sxm as dat_sxm_mod
+
+        dat = tmp_path / "scan.dat"
+        dat.write_bytes(b"placeholder")
+        cushion = tmp_path / "cushion"
+        seen = {}
+
+        def fake_load_scan(path):
+            seen["load_path"] = path
+            return "scan-object"
+
+        def fake_write_sxm(scan, out_path, **kwargs):
+            seen["scan"] = scan
+            seen["out_path"] = out_path
+            seen["kwargs"] = kwargs
+
+        monkeypatch.setattr(dat_sxm_mod, "load_scan", fake_load_scan)
+        monkeypatch.setattr(dat_sxm_mod, "write_sxm", fake_write_sxm)
+
+        dat_sxm_mod.convert_dat_to_sxm(
+            dat,
+            tmp_path / "out",
+            cushion,
+            clip_low=2.0,
+            clip_high=98.0,
+        )
+
+        assert seen["load_path"] == dat
+        assert seen["scan"] == "scan-object"
+        assert seen["out_path"] == tmp_path / "out" / "scan.sxm"
+        assert seen["kwargs"] == {
+            "cushion_dir": cushion,
+            "clip_low": 2.0,
+            "clip_high": 98.0,
+        }
+
     def test_produces_sxm_file(self, first_sample_dat, tmp_path, cushion_dir):
         out_dir = tmp_path / "sxm_out"
         convert_dat_to_sxm(first_sample_dat, out_dir, cushion_dir)
