@@ -617,6 +617,23 @@ class TestApplyKnownSteps:
         np.testing.assert_array_equal(result[~mask], arr[~mask])
         assert not np.allclose(result[mask], arr[mask])
 
+    def test_roi_geometry_mask_accepts_fractional_geometry(self):
+        from probeflow.processing_state import roi_geometry_mask
+
+        rect_mask = roi_geometry_mask((10, 10), {
+            "kind": "rectangle",
+            "bounds_frac": (0.2, 0.3, 0.6, 0.7),
+        })
+        polygon_mask = roi_geometry_mask((10, 10), {
+            "kind": "polygon",
+            "points_frac": [(0.2, 0.2), (0.8, 0.2), (0.5, 0.8)],
+        })
+
+        assert rect_mask is not None
+        assert rect_mask.any()
+        assert polygon_mask is not None
+        assert polygon_mask.any()
+
     def test_patch_interpolate_accepts_polygon_mask(self):
         arr = np.ones((16, 16), dtype=float)
         geometry = {

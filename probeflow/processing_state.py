@@ -65,7 +65,7 @@ def roi_geometry_mask(
     except AttributeError:
         return None
     if kind == "rectangle":
-        rect = geometry.get("rect_px") or geometry.get("rect") or ()
+        rect = _rect_from_geometry(shape, geometry)
         try:
             x0, y0, x1, y1 = _clamped_rect(shape, rect)
         except ValueError:
@@ -74,7 +74,7 @@ def roi_geometry_mask(
         mask[y0:y1 + 1, x0:x1 + 1] = True
         return mask
     if kind == "ellipse":
-        rect = geometry.get("rect_px") or geometry.get("bounds_px") or ()
+        rect = _rect_from_geometry(shape, geometry)
         try:
             x0, y0, x1, y1 = _clamped_rect(shape, rect)
         except ValueError:
@@ -86,7 +86,7 @@ def roi_geometry_mask(
         ry = max(0.5, (y1 - y0 + 1) / 2.0)
         return (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
     if kind == "polygon":
-        points = _points_from_geometry(geometry)
+        points = _points_from_geometry(shape, geometry)
         if len(points) < 3:
             return None
         yy, xx = np.mgrid[:shape[0], :shape[1]]
@@ -104,6 +104,31 @@ def roi_geometry_mask(
     return None
 
 
+def _rect_from_geometry(shape: tuple[int, int], geometry: dict[str, Any]):
+    for key in ("rect_px", "bounds_px", "rect"):
+        rect = geometry.get(key)
+        if rect is not None:
+            try:
+                if len(rect) == 4:
+                    return rect
+            except TypeError:
+                pass
+    bounds_frac = geometry.get("bounds_frac")
+    if bounds_frac is None:
+        return ()
+    try:
+        x0f, y0f, x1f, y1f = [float(v) for v in bounds_frac]
+    except (TypeError, ValueError):
+        return ()
+    Ny, Nx = shape
+    return (
+        int(round(min(x0f, x1f) * (Nx - 1))),
+        int(round(min(y0f, y1f) * (Ny - 1))),
+        int(round(max(x0f, x1f) * (Nx - 1))),
+        int(round(max(y0f, y1f) * (Ny - 1))),
+    )
+
+
 def roi_geometry_bounds(
     shape: tuple[int, int],
     geometry: dict[str, Any] | None,
@@ -117,8 +142,27 @@ def roi_geometry_bounds(
     return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
-def _points_from_geometry(geometry: dict[str, Any]) -> list[tuple[float, float]]:
-    raw = geometry.get("points_px") or geometry.get("points") or ()
+def _points_from_geometry(
+    shape: tuple[int, int],
+    geometry: dict[str, Any],
+) -> list[tuple[float, float]]:
+    raw = geometry.get("points_px")
+    if raw is None:
+        raw = geometry.get("points")
+    if raw is None and geometry.get("points_frac") is not None:
+        Ny, Nx = shape
+        points = []
+        for item in geometry.get("points_frac", ()):
+            try:
+                points.append((
+                    float(item[0]) * (Nx - 1),
+                    float(item[1]) * (Ny - 1),
+                ))
+            except (TypeError, ValueError, IndexError):
+                continue
+        raw = points
+    if raw is None:
+        raw = ()
     points: list[tuple[float, float]] = []
     for item in raw:
         try:

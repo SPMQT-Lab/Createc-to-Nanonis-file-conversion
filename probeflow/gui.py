@@ -989,7 +989,6 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.marker_clicked.connect(self._on_marker_clicked)
         self._zoom_lbl.pixel_clicked.connect(self._on_set_zero_pick)
         self._zoom_lbl.selection_changed.connect(self._on_selection_changed)
-        self._zoom_lbl.roi_selected.connect(self._on_roi_selected)
         self._zoom_lbl.pixmap_resized.connect(self._on_pixmap_resized)
 
         right_lay.addWidget(_sep())
@@ -1413,7 +1412,10 @@ class ImageViewerDialog(QDialog):
         if not geometry or shape is None:
             return None
         Ny, Nx = shape
-        out = {"kind": str(geometry.get("kind", ""))}
+        kind = str(geometry.get("kind", ""))
+        if kind not in {"rectangle", "ellipse", "polygon", "line"}:
+            return None
+        out = {"kind": kind}
         if geometry.get("bounds_frac") is not None:
             try:
                 x0f, y0f, x1f, y1f = [float(v) for v in geometry["bounds_frac"]]
@@ -1489,6 +1491,7 @@ class ImageViewerDialog(QDialog):
         self._roi_status_lbl.setText(self._selection_status_text(converted))
 
     def _on_set_zero_plane_mode_toggled(self, checked: bool):
+        cleared_partial_points = False
         if checked:
             self._set_selection_tool("none")
             self._zero_pick_mode = "plane"
@@ -1496,32 +1499,25 @@ class ImageViewerDialog(QDialog):
             self._status_lbl.setText("Click 3 reference points to define the zero plane.")
         elif self._zero_pick_mode == "plane" and len(self._zero_plane_points_px) < 3:
             self._zero_plane_points_px = []
+            cleared_partial_points = True
         self._zoom_lbl.set_set_zero_mode(checked)
-
-    def _on_roi_selected(self, x0f: float, y0f: float, x1f: float, y1f: float):
-        arr = self._raw_arr if self._raw_arr is not None else self._display_arr
-        if arr is None:
-            self._roi_rect_px = None
-            self._roi_status_lbl.setText("Selection: none")
-            return
-        Ny, Nx = arr.shape
-        x0 = max(0, min(Nx - 1, int(round(min(x0f, x1f) * (Nx - 1)))))
-        x1 = max(0, min(Nx - 1, int(round(max(x0f, x1f) * (Nx - 1)))))
-        y0 = max(0, min(Ny - 1, int(round(min(y0f, y1f) * (Ny - 1)))))
-        y1 = max(0, min(Ny - 1, int(round(max(y0f, y1f) * (Ny - 1)))))
-        if x1 <= x0 or y1 <= y0:
-            self._on_clear_roi()
-            return
-        geometry = {
-            "kind": "rectangle",
-            "bounds_frac": (x0f, y0f, x1f, y1f),
-            "rect_px": (x0, y0, x1, y1),
-        }
-        self._selection_geometry = geometry
-        self._roi_rect_px = geometry["rect_px"]
-        self._roi_status_lbl.setText(self._selection_status_text(geometry))
+        if cleared_partial_points:
+            self._refresh_zero_markers()
 
     def _on_clear_roi(self):
+        had_processing_selection = any(
+            key in self._processing
+            for key in (
+                "processing_scope",
+                "roi_rect",
+                "roi_geometry",
+                "background_fit_rect",
+                "background_fit_geometry",
+                "patch_interpolate_rect",
+                "patch_interpolate_geometry",
+                "patch_interpolate_iterations",
+            )
+        )
         self._roi_rect_px = None
         self._selection_geometry = None
         self._processing.pop("processing_scope", None)
@@ -1538,6 +1534,8 @@ class ImageViewerDialog(QDialog):
         self._bg_fit_roi_cb.setChecked(False)
         self._patch_roi_cb.setChecked(False)
         self._roi_status_lbl.setText("Selection: none")
+        if had_processing_selection:
+            self._refresh_processing_display()
 
     def _on_set_zero_pick(self, frac_x: float, frac_y: float):
         """Handle image clicks while manual zero-plane mode is active."""

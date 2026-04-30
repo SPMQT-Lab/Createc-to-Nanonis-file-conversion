@@ -220,7 +220,6 @@ class _ZoomLabel(QLabel):
 
     marker_clicked = Signal(object)  # emits VertFile when user clicks a marker
     pixel_clicked  = Signal(float, float)  # (frac_x, frac_y) — only when set_zero_mode is on
-    roi_selected   = Signal(float, float, float, float)  # fractional x0, y0, x1, y1
     selection_changed = Signal(object)  # structured ROI geometry
     pixmap_resized = Signal(int)  # new pixmap width in pixels (zoom changes, source changes)
 
@@ -244,9 +243,6 @@ class _ZoomLabel(QLabel):
         self._set_zero_mode = bool(enabled)
         self._update_cursor()
 
-    def set_roi_mode(self, enabled: bool):
-        self.set_selection_tool("rectangle" if enabled else "none")
-
     def set_selection_tool(self, kind: str):
         kind = str(kind or "none").lower()
         if kind not in {"none", "rectangle", "ellipse", "polygon", "line"}:
@@ -263,23 +259,6 @@ class _ZoomLabel(QLabel):
         self._selection_drag = None
         self._selection_geometry = None
         self._polygon_points = []
-        self.update()
-
-    def set_roi_rect_frac(self, rect):
-        """Set persistent ROI overlay as fractional image coordinates.
-
-        The ROI overlay is intentionally independent of the image pixmap.  It
-        stays visible across re-rendering, processing changes, and zoom updates
-        so users can see which region has been selected/affected.
-        """
-        if rect is None:
-            self._selection_geometry = None
-        else:
-            x0, y0, x1, y1 = [float(v) for v in rect]
-            self._selection_geometry = {
-                "kind": "rectangle",
-                "bounds_frac": self._norm_bounds(x0, y0, x1, y1),
-            }
         self.update()
 
     def _update_cursor(self):
@@ -381,15 +360,6 @@ class _ZoomLabel(QLabel):
             QPointF(float(x) * self.width(), float(y) * self.height())
             for x, y in points
         ]
-
-    def _roi_rect_from_frac(self) -> QRect | None:
-        geometry = self._active_selection()
-        if geometry is None:
-            return None
-        bounds = geometry.get("bounds_frac")
-        if bounds is None:
-            return None
-        return self._rect_from_bounds(bounds)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -575,9 +545,6 @@ class _ZoomLabel(QLabel):
             self._selection_drag = None
             self._selection_geometry = geometry
             self.selection_changed.emit(dict(geometry))
-            if geometry["kind"] == "rectangle":
-                x0, y0, x1, y1 = geometry["bounds_frac"]
-                self.roi_selected.emit(x0, y0, x1, y1)
             self.update()
             return
         super().mouseReleaseEvent(event)

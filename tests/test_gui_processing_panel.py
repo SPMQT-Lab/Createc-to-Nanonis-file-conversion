@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 
@@ -134,7 +135,7 @@ def test_viewer_line_selection_rejected_for_processing(qapp, monkeypatch):
 
     entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
     dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
-    dlg._raw_arr = __import__("numpy").zeros((8, 8), dtype=float)
+    dlg._raw_arr = np.zeros((8, 8), dtype=float)
     dlg._on_selection_changed({
         "kind": "line",
         "points_frac": [(0.0, 0.0), (1.0, 1.0)],
@@ -150,8 +151,38 @@ def test_viewer_line_selection_rejected_for_processing(qapp, monkeypatch):
     dlg.deleteLater()
 
 
+def test_viewer_clear_selection_refreshes_selection_processing(qapp, monkeypatch):
+    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
+
+    calls = {"refresh": 0}
+    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+    monkeypatch.setattr(
+        ImageViewerDialog,
+        "_refresh_processing_display",
+        lambda self: calls.__setitem__("refresh", calls["refresh"] + 1),
+    )
+
+    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
+    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+    dlg._processing = {
+        "processing_scope": "roi",
+        "roi_geometry": {"kind": "ellipse", "rect_px": (1, 1, 6, 6)},
+        "smooth_sigma": 1.0,
+    }
+    dlg._selection_geometry = {"kind": "ellipse", "rect_px": (1, 1, 6, 6)}
+
+    dlg._on_clear_roi()
+
+    assert calls["refresh"] == 1
+    assert "processing_scope" not in dlg._processing
+    assert "roi_geometry" not in dlg._processing
+    assert dlg._selection_geometry is None
+
+    dlg.close()
+    dlg.deleteLater()
+
+
 def test_viewer_zero_plane_workflow_remains_available(qapp, monkeypatch):
-    import numpy as np
     from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
 
     monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
@@ -169,6 +200,30 @@ def test_viewer_zero_plane_workflow_remains_available(qapp, monkeypatch):
     assert dlg._processing["set_zero_plane_points"] == [(0, 0), (4, 4), (9, 9)]
     assert "set_zero_xy" not in dlg._processing
     assert dlg._set_zero_plane_btn.isChecked() is False
+
+    dlg.close()
+    dlg.deleteLater()
+
+
+def test_viewer_zero_plane_cancel_clears_partial_markers(qapp, monkeypatch):
+    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
+
+    calls = {"markers": None}
+    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+
+    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
+    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+    dlg._raw_arr = np.zeros((10, 10), dtype=float)
+    dlg._zoom_lbl.set_zero_markers = lambda markers: calls.__setitem__("markers", markers)
+
+    dlg._set_zero_plane_btn.setChecked(True)
+    dlg._on_set_zero_pick(0.0, 0.0)
+    assert dlg._zero_plane_points_px == [(0, 0)]
+
+    dlg._set_zero_plane_btn.setChecked(False)
+
+    assert dlg._zero_plane_points_px == []
+    assert calls["markers"] == []
 
     dlg.close()
     dlg.deleteLater()
