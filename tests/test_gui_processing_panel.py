@@ -337,8 +337,9 @@ def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
         def show_empty(self, message="Draw a line to show profile.", theme=None):
             self.empty = message
 
-        def plot_profile(self, distance_nm, values, *, y_label, theme=None):
-            self.profile = (np.asarray(distance_nm), np.asarray(values), y_label)
+        def plot_profile(self, x_vals, values, *, x_label="Distance [nm]",
+                         y_label, theme=None):
+            self.profile = (np.asarray(x_vals), np.asarray(values), x_label, y_label)
 
     class FakeZoom:
         def selection_tool(self):
@@ -359,8 +360,12 @@ def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
         "points_px": [(0, 2), (4, 2)],
     })
 
-    distance_nm, values, y_label = dlg._line_profile_panel.profile
-    np.testing.assert_allclose(distance_nm, np.linspace(0.0, 4.0, 5))
+    x_vals, values, x_label, y_label = dlg._line_profile_panel.profile
+    # Profile spans 4 pixels × 1 nm/pixel = 4 nm = 40 Å.
+    # choose_display_unit picks Å for ~2.5 nm median magnitude.
+    assert "Distance" in x_label
+    assert x_vals[0] == pytest.approx(0.0)
+    assert x_vals[-1] > 0
     np.testing.assert_allclose(values, np.arange(5, dtype=np.float64))
     assert y_label == "Test channel [V]"
 

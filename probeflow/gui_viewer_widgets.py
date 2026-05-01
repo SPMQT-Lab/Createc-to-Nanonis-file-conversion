@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QPointF, QRect, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QPainter, QPen, QPixmap, QPolygonF, QWheelEvent,
 )
-from PySide6.QtWidgets import QLabel, QToolTip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QToolTip, QVBoxLayout, QWidget
 
 # ── Physical-axis ruler (top / left of the image) ───────────────────────────
 class RulerWidget(QWidget):
@@ -219,18 +219,43 @@ class ScaleBarWidget(QWidget):
 class LineProfilePanel(QWidget):
     """Compact live profile plot for viewer line selections."""
 
+    export_csv_clicked = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 0)
-        lay.setSpacing(0)
+        lay.setSpacing(2)
         self._fig = Figure(figsize=(5.0, 1.8), dpi=80)
         self._fig.patch.set_alpha(0)
         self._ax = self._fig.add_subplot(111)
         self._canvas = FigureCanvasQTAgg(self._fig)
         self._canvas.setFixedHeight(150)
         lay.addWidget(self._canvas)
+
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.addStretch()
+        self._export_btn = QPushButton("Export CSV…")
+        self._export_btn.setFont(QFont("Helvetica", 8))
+        self._export_btn.setFixedHeight(20)
+        self._export_btn.setEnabled(False)
+        self._export_btn.setToolTip("Export line profile data as CSV")
+        self._export_btn.clicked.connect(self.export_csv_clicked)
+        btn_row.addWidget(self._export_btn)
+        lay.addLayout(btn_row)
+
+        self._x_vals = None
+        self._y_vals = None
+        self._x_label = ""
+        self._y_label = ""
         self.show_empty()
+
+    def profile_data(self):
+        """Return (x_vals, y_vals, x_label, y_label) or None if no profile."""
+        if self._x_vals is None:
+            return None
+        return self._x_vals, self._y_vals, self._x_label, self._y_label
 
     def show_empty(self, message: str = "Draw a line to show profile.",
                    theme: Optional[dict] = None) -> None:
@@ -249,9 +274,12 @@ class LineProfilePanel(QWidget):
             spine.set_edgecolor(sep)
         self._fig.tight_layout(pad=0.35)
         self._canvas.draw_idle()
+        self._x_vals = None
+        self._y_vals = None
+        self._export_btn.setEnabled(False)
 
-    def plot_profile(self, distance_nm, values, *, y_label: str,
-                     theme: Optional[dict] = None) -> None:
+    def plot_profile(self, x_vals, values, *, x_label: str = "Distance [nm]",
+                     y_label: str, theme: Optional[dict] = None) -> None:
         theme = theme or {}
         bg = theme.get("bg", "#1e1e2e")
         fg = theme.get("fg", "#cdd6f4")
@@ -260,14 +288,19 @@ class LineProfilePanel(QWidget):
         self._fig.patch.set_facecolor(bg)
         self._ax.cla()
         self._ax.set_facecolor(bg)
-        self._ax.plot(distance_nm, values, color=accent, linewidth=1.1)
-        self._ax.set_xlabel("Distance [nm]", fontsize=8, color=fg)
+        self._ax.plot(x_vals, values, color=accent, linewidth=1.1)
+        self._ax.set_xlabel(x_label, fontsize=8, color=fg)
         self._ax.set_ylabel(y_label, fontsize=8, color=fg)
         self._ax.tick_params(colors=fg, labelsize=7)
         for spine in self._ax.spines.values():
             spine.set_edgecolor(sep)
         self._fig.tight_layout(pad=0.35)
         self._canvas.draw_idle()
+        self._x_vals = x_vals
+        self._y_vals = values
+        self._x_label = x_label
+        self._y_label = y_label
+        self._export_btn.setEnabled(True)
 
 
 # ── Full-size image viewer dialog ─────────────────────────────────────────────
@@ -279,6 +312,7 @@ class _ZoomLabel(QLabel):
     selection_preview_changed = Signal(object)  # structured ROI geometry while dragging
     selection_changed = Signal(object)  # structured ROI geometry
     pixmap_resized = Signal(int)  # new pixmap width in pixels (zoom changes, source changes)
+    context_menu_requested = Signal(object)  # QPoint (global position)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -800,6 +834,10 @@ class _ZoomLabel(QLabel):
             self.update()
             return
         super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()
 
     def wheelEvent(self, event: QWheelEvent):
         if event.modifiers() & Qt.ControlModifier:

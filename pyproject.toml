@@ -20,6 +20,7 @@ dependencies = [
 dev      = ["pytest"]
 features = ["opencv-python", "scikit-learn"]
 gwyddion = ["gwyfile"]
+all      = ["opencv-python", "scikit-learn", "gwyfile", "pytest"]
 
 [project.scripts]
 probeflow = "probeflow.cli:main"

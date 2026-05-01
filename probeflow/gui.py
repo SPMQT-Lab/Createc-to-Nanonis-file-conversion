@@ -650,6 +650,8 @@ class ImageViewerDialog(QDialog):
         self._zero_markers_hidden = False
         self._pending_initial_plane_idx: Optional[int] = max(0, int(initial_plane_idx))
         self._reset_zoom_on_next_pixmap = True
+        self._deferred_action: str = ""
+        self._deferred_plane_idx: int = 0
 
         self._build()
         self._processing_panel.set_state(self._processing)
@@ -1003,12 +1005,14 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.selection_preview_changed.connect(self._on_selection_preview_changed)
         self._zoom_lbl.selection_changed.connect(self._on_selection_changed)
         self._zoom_lbl.pixmap_resized.connect(self._on_pixmap_resized)
+        self._zoom_lbl.context_menu_requested.connect(self._on_image_context_menu)
+        self._line_profile_panel.export_csv_clicked.connect(self._on_export_line_profile_csv)
 
         right_lay.addWidget(_sep())
 
-        # save PNG copy
+        # save PNG copy + send to other tools
         self._export_toggle, self._export_widget, export_lay = (
-            _collapsible_section("Export", expanded=False)
+            _collapsible_section("Export / Send", expanded=False)
         )
         save_btn = QPushButton("⬇ Save PNG copy…")
         save_btn.setFont(QFont("Helvetica", 8, QFont.Bold))
@@ -1016,6 +1020,22 @@ class ImageViewerDialog(QDialog):
         save_btn.setObjectName("accentBtn")
         save_btn.clicked.connect(self._on_save_png)
         export_lay.addWidget(save_btn)
+
+        send_feat_btn = QPushButton("→ Feature Counting")
+        send_feat_btn.setFont(QFont("Helvetica", 8))
+        send_feat_btn.setFixedHeight(24)
+        send_feat_btn.setToolTip(
+            "Send the current processed image to the Feature Counting tab and close viewer")
+        send_feat_btn.clicked.connect(self._on_send_to_features)
+        export_lay.addWidget(send_feat_btn)
+
+        send_tv_btn = QPushButton("→ TV Denoising")
+        send_tv_btn.setFont(QFont("Helvetica", 8))
+        send_tv_btn.setFixedHeight(24)
+        send_tv_btn.setToolTip(
+            "Send the current processed image to the TV Denoising tab and close viewer")
+        send_tv_btn.clicked.connect(self._on_send_to_tv)
+        export_lay.addWidget(send_tv_btn)
 
         self._status_lbl = QLabel("")
         self._status_lbl.setFont(QFont("Helvetica", 8))
@@ -1604,9 +1624,13 @@ class ImageViewerDialog(QDialog):
             )
             scale, unit, axis_label = self._channel_unit()
             y_label = f"{axis_label} [{unit}]" if unit else axis_label
+            from probeflow.spec_plot import choose_display_unit
+            x_scale, x_unit = choose_display_unit("m", s_m)
+            x_label = f"Distance [{x_unit}]"
             self._line_profile_panel.plot_profile(
-                s_m * 1e9,
+                s_m * x_scale,
                 values.astype(np.float64) * scale,
+                x_label=x_label,
                 y_label=y_label,
                 theme=self._t,
             )
@@ -2108,6 +2132,89 @@ class ImageViewerDialog(QDialog):
             self._status_lbl.setText(f"Saved → {Path(out_path).name}")
         except Exception as exc:
             self._status_lbl.setText(f"Export error: {exc}")
+
+    def _on_send_to_features(self):
+        self._deferred_action = "features"
+        self._deferred_plane_idx = self._ch_cb.currentIndex()
+        self.accept()
+
+    def _on_send_to_tv(self):
+        self._deferred_action = "tv"
+        self._deferred_plane_idx = self._ch_cb.currentIndex()
+        self.accept()
+
+    def _on_image_context_menu(self, pos):
+        from PySide6.QtWidgets import QMenu
+        from PySide6.QtGui import QAction
+        menu = QMenu(self)
+        a_feat = QAction("→ Feature Counting", self)
+        a_feat.setToolTip("Send processed image to Feature Counting tab")
+        a_feat.triggered.connect(self._on_send_to_features)
+        menu.addAction(a_feat)
+        a_tv = QAction("→ TV Denoising", self)
+        a_tv.setToolTip("Send processed image to TV Denoising tab")
+        a_tv.triggered.connect(self._on_send_to_tv)
+        menu.addAction(a_tv)
+        menu.addSeparator()
+        a_png = QAction("⬇ Save PNG copy…", self)
+        a_png.triggered.connect(self._on_save_png)
+        menu.addAction(a_png)
+        prof = self._line_profile_panel.profile_data()
+        if prof is not None:
+            a_csv = QAction("Export line profile as CSV…", self)
+            a_csv.triggered.connect(self._on_export_line_profile_csv)
+            menu.addAction(a_csv)
+        menu.exec(pos)
+
+    def _on_export_line_profile_csv(self):
+        prof = self._line_profile_panel.profile_data()
+        if prof is None:
+            self._status_lbl.setText("No line profile to export (draw a line first).")
+            return
+        x_vals, y_vals, x_label, y_label = prof
+        entry = self._entries[self._idx]
+        hdr = self._scan_header or {}
+        bias_mv = None
+        current_a = None
+        for k, v in hdr.items():
+            kl = k.lower()
+            if "biasvolt" in kl or "vgap" in kl:
+                try:
+                    bias_mv = float(str(v).replace(",", "."))
+                except (ValueError, TypeError):
+                    pass
+            elif k == "Current[A]":
+                try:
+                    current_a = float(str(v).replace(",", "."))
+                except (ValueError, TypeError):
+                    pass
+        parts = [entry.stem]
+        if bias_mv is not None:
+            parts.append(f"{bias_mv:.0f}mV")
+        if current_a is not None:
+            parts.append(f"{current_a * 1e12:.0f}pA")
+        suggested_name = "_".join(parts) + "_lineprofile.csv"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Export line profile as CSV",
+            str(Path.home() / suggested_name),
+            "CSV files (*.csv)")
+        if not out_path:
+            return
+        try:
+            import csv
+            with open(out_path, "w", newline="", encoding="utf-8") as fh:
+                w = csv.writer(fh)
+                w.writerow(["# File", entry.stem])
+                if bias_mv is not None:
+                    w.writerow(["# Bias (mV)", f"{bias_mv:.3f}"])
+                if current_a is not None:
+                    w.writerow(["# Setpoint current (A)", f"{current_a:.3e}"])
+                w.writerow([x_label, y_label])
+                for x, y in zip(x_vals, y_vals):
+                    w.writerow([f"{float(x):.6g}", f"{float(y):.6g}"])
+            self._status_lbl.setText(f"Profile → {Path(out_path).name}")
+        except Exception as exc:
+            self._status_lbl.setText(f"CSV export error: {exc}")
 
 
 # ── Spec → image mapping dialogs ─────────────────────────────────────────────
@@ -3641,6 +3748,192 @@ class Navbar(QWidget):
             btn.setStyleSheet(btn_qss)
 
 
+# ── Developer terminal sidebar ────────────────────────────────────────────────
+class _DevSidebar(QWidget):
+    """Sidebar for the Dev tab: shows cwd, quick links, and info."""
+
+    def __init__(self, t: dict, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(8)
+
+        title = QLabel("Developer Mode")
+        title.setFont(QFont("Helvetica", 11, QFont.Bold))
+        lay.addWidget(title)
+
+        info = QLabel(
+            "Run shell commands, scripts, and quick analyses directly in the "
+            "ProbeFlow environment.\n\n"
+            "Use ↑/↓ arrow keys in the input box to navigate command history.\n\n"
+            "Python packages are available in the same environment as ProbeFlow — "
+            "import probeflow, numpy, scipy, etc.\n\n"
+            "Tip: drag & drop a file path into the input box from Browse to use "
+            "it in a command."
+        )
+        info.setFont(QFont("Helvetica", 9))
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        example_lbl = QLabel("Quick examples:")
+        example_lbl.setFont(QFont("Helvetica", 9, QFont.Bold))
+        lay.addWidget(example_lbl)
+
+        examples = QLabel(
+            "python3 -c \"import probeflow; print(probeflow.__file__)\"\n\n"
+            "python3 scripts/my_analysis.py\n\n"
+            "ls -lh *.dat\n\n"
+            "python3 -c \"from probeflow.readers.dat import read_dat; "
+            "import numpy as np; s = read_dat('scan.dat'); "
+            "print(np.nanmin(s.planes[0])*1e10, 'A')\""
+        )
+        examples.setFont(QFont("Courier New" if sys.platform == "win32" else "Monospace", 8))
+        examples.setWordWrap(True)
+        examples.setStyleSheet("color: #888;")
+        lay.addWidget(examples)
+
+        lay.addStretch()
+
+
+# ── Developer terminal ────────────────────────────────────────────────────────
+class DeveloperTerminalWidget(QWidget):
+    """Embedded shell terminal for quick command execution.
+
+    Runs a subprocess shell (bash on Linux/WSL, cmd on Windows) and
+    captures stdout/stderr into a read-only log pane.  Not a full PTY —
+    interactive TUI programs (vim, less, ipython) won't work, but one-shot
+    commands and Python scripts run fine.
+    """
+
+    def __init__(self, t: dict, parent=None):
+        super().__init__(parent)
+        self._history: list[str] = []
+        self._history_idx: int = -1
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        title = QLabel("Developer Terminal")
+        title.setFont(QFont("Helvetica", 11, QFont.Bold))
+        lay.addWidget(title)
+
+        hint = QLabel(
+            "Run shell commands in the ProbeFlow working directory.  "
+            "Interactive programs (vim, less) are not supported.")
+        hint.setFont(QFont("Helvetica", 8))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        lay.addWidget(hint)
+
+        from PySide6.QtWidgets import QPlainTextEdit
+        self._output = QPlainTextEdit()
+        self._output.setReadOnly(True)
+        self._output.setFont(QFont("Courier New" if sys.platform == "win32" else "Monospace", 9))
+        self._output.setMaximumBlockCount(5000)
+        lay.addWidget(self._output, 1)
+
+        input_row = QHBoxLayout()
+        input_row.setSpacing(4)
+        self._prompt_lbl = QLabel("$")
+        self._prompt_lbl.setFont(QFont("Courier New" if sys.platform == "win32" else "Monospace", 9))
+        self._input = QLineEdit()
+        self._input.setFont(QFont("Courier New" if sys.platform == "win32" else "Monospace", 9))
+        self._input.setPlaceholderText("Enter command…")
+        self._input.returnPressed.connect(self._run_command)
+        self._input.installEventFilter(self)
+        run_btn = QPushButton("Run")
+        run_btn.setFont(QFont("Helvetica", 9))
+        run_btn.setFixedHeight(26)
+        run_btn.clicked.connect(self._run_command)
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFont(QFont("Helvetica", 9))
+        clear_btn.setFixedHeight(26)
+        clear_btn.clicked.connect(self._output.clear)
+        input_row.addWidget(self._prompt_lbl)
+        input_row.addWidget(self._input, 1)
+        input_row.addWidget(run_btn)
+        input_row.addWidget(clear_btn)
+        lay.addLayout(input_row)
+
+        from PySide6.QtCore import QProcess
+        self._process = QProcess(self)
+        self._process.setProcessChannelMode(QProcess.MergedChannels)
+        self._process.readyReadStandardOutput.connect(self._on_output)
+        self._process.finished.connect(self._on_finished)
+        self._process.errorOccurred.connect(self._on_error)
+
+        self._set_cwd(Path.cwd())
+        self._apply_theme(t)
+
+    def _set_cwd(self, cwd: Path):
+        self._cwd = cwd
+        self._process.setWorkingDirectory(str(cwd))
+        self._prompt_lbl.setText(f"{cwd.name} $")
+        self._prompt_lbl.setToolTip(str(cwd))
+
+    def _apply_theme(self, t: dict):
+        bg = t.get("bg", "#1e1e2e")
+        fg = t.get("fg", "#cdd6f4")
+        self._output.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; border: 1px solid #45475a;")
+
+    def _run_command(self):
+        cmd = self._input.text().strip()
+        if not cmd:
+            return
+        if self._process.state() != 0:  # QProcess.NotRunning == 0
+            self._output.appendPlainText("[Previous command still running — wait or clear]")
+            return
+        self._history = [c for c in self._history if c != cmd]
+        self._history.insert(0, cmd)
+        self._history_idx = -1
+        self._input.clear()
+        self._output.appendPlainText(f"$ {cmd}")
+        import shutil
+        if sys.platform.startswith("win"):
+            shell, args = "cmd.exe", ["/c", cmd]
+        else:
+            shell = shutil.which("bash") or "/bin/sh"
+            args = ["-c", cmd]
+        self._process.start(shell, args)
+
+    def _on_output(self):
+        raw = bytes(self._process.readAllStandardOutput())
+        text = raw.decode("utf-8", errors="replace")
+        import re
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
+        text = re.sub(r"\x1b\][^\x07]*\x07", "", text)
+        text = text.rstrip("\n")
+        if text:
+            self._output.appendPlainText(text)
+
+    def _on_finished(self, exit_code: int, exit_status):
+        self._output.appendPlainText(f"[exit {exit_code}]")
+
+    def _on_error(self, error):
+        self._output.appendPlainText(f"[process error: {error}]")
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is self._input and event.type() == QEvent.KeyPress:
+            from PySide6.QtGui import QKeyEvent
+            key = event.key()
+            if key == Qt.Key_Up and self._history:
+                self._history_idx = min(self._history_idx + 1, len(self._history) - 1)
+                self._input.setText(self._history[self._history_idx])
+                return True
+            if key == Qt.Key_Down:
+                if self._history_idx > 0:
+                    self._history_idx -= 1
+                    self._input.setText(self._history[self._history_idx])
+                else:
+                    self._history_idx = -1
+                    self._input.clear()
+                return True
+        return super().eventFilter(obj, event)
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 class ProbeFlowWindow(QMainWindow):
     def __init__(self):
@@ -3687,8 +3980,9 @@ class ProbeFlowWindow(QMainWindow):
         self._tab_convert  = QPushButton("Convert")
         self._tab_features = QPushButton("FeatureCounting")
         self._tab_tv       = QPushButton("TV-denoise")
+        self._tab_dev      = QPushButton("Dev")
         for btn in (self._tab_browse, self._tab_convert, self._tab_features,
-                    self._tab_tv):
+                    self._tab_tv, self._tab_dev):
             btn.setFont(QFont("Helvetica", 11, QFont.Bold))
             btn.setFixedHeight(44)
             btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -3699,6 +3993,7 @@ class ProbeFlowWindow(QMainWindow):
         self._tab_convert.clicked.connect(lambda: self._switch_mode("convert"))
         self._tab_features.clicked.connect(lambda: self._switch_mode("features"))
         self._tab_tv.clicked.connect(lambda: self._switch_mode("tv"))
+        self._tab_dev.clicked.connect(lambda: self._switch_mode("dev"))
         v_lay.addWidget(self._tab_bar)
 
         # Body splitter
@@ -3725,10 +4020,12 @@ class ProbeFlowWindow(QMainWindow):
         self._conv_panel    = ConvertPanel(t, self._cfg)
         self._features_panel = FeaturesPanel(t)
         self._tv_panel       = TVPanel(t)
+        self._dev_terminal   = DeveloperTerminalWidget(t)
         self._content_stack.addWidget(browse_split)
         self._content_stack.addWidget(self._conv_panel)
         self._content_stack.addWidget(self._features_panel)
         self._content_stack.addWidget(self._tv_panel)
+        self._content_stack.addWidget(self._dev_terminal)
         self._splitter.addWidget(self._content_stack)
 
         # ── Right: sidebar stack ───────────────────────────────────────────────
@@ -3738,10 +4035,12 @@ class ProbeFlowWindow(QMainWindow):
         self._convert_sidebar  = ConvertSidebar(t, self._cfg)
         self._features_sidebar = FeaturesSidebar(t)
         self._tv_sidebar       = TVSidebar(t)
+        self._dev_sidebar      = _DevSidebar(t)
         self._sidebar_stack.addWidget(self._browse_info)
         self._sidebar_stack.addWidget(self._convert_sidebar)
         self._sidebar_stack.addWidget(self._features_sidebar)
         self._sidebar_stack.addWidget(self._tv_sidebar)
+        self._sidebar_stack.addWidget(self._dev_sidebar)
         self._splitter.addWidget(self._sidebar_stack)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 0)
@@ -3816,6 +4115,11 @@ class ProbeFlowWindow(QMainWindow):
                     "Pick a scan in Browse, then 'Load primary scan from Browse'")
             else:
                 self._status_bar.showMessage("TV-denoise — adjust parameters and Run")
+        elif mode == "dev":
+            self._content_stack.setCurrentIndex(4)
+            self._sidebar_stack.setCurrentIndex(4)
+            self._status_bar.showMessage(
+                "Developer terminal — run shell commands and Python scripts")
         else:
             self._content_stack.setCurrentIndex(1)
             self._sidebar_stack.setCurrentIndex(1)
@@ -3827,7 +4131,8 @@ class ProbeFlowWindow(QMainWindow):
         for btn, name in ((self._tab_browse, "browse"),
                           (self._tab_convert, "convert"),
                           (self._tab_features, "features"),
-                          (self._tab_tv, "tv")):
+                          (self._tab_tv, "tv"),
+                          (self._tab_dev, "dev")):
             active = (self._mode == name)
             if active:
                 btn.setStyleSheet(f"""
@@ -4272,6 +4577,38 @@ class ProbeFlowWindow(QMainWindow):
                                     spec_image_map=self._spec_image_map,
                                     initial_plane_idx=initial_plane_idx)
             dlg.exec()
+            # Handle "Send to …" actions requested from inside the viewer.
+            action = getattr(dlg, "_deferred_action", "")
+            if action in ("features", "tv"):
+                self._load_from_viewer(dlg, action)
+
+    def _load_from_viewer(self, dlg, action: str):
+        """Load the processed array from a closed ImageViewerDialog into Features or TV."""
+        entry = dlg._entries[dlg._idx]
+        plane_idx = getattr(dlg, "_deferred_plane_idx", dlg._ch_cb.currentIndex())
+        arr = dlg._display_arr if dlg._display_arr is not None else dlg._raw_arr
+        if arr is None:
+            self._status_bar.showMessage("Viewer had no image data to send.")
+            return
+        scan_range = dlg._scan_range_m
+        shape = arr.shape
+        if scan_range and shape and shape[0] > 0 and shape[1] > 0:
+            w_m, h_m = float(scan_range[0]), float(scan_range[1])
+            px_m = float(np.sqrt((w_m / shape[1]) * (h_m / shape[0])))
+        else:
+            px_m = 1e-10
+        if action == "features":
+            self._switch_mode("features")
+            self._features_panel.load_entry(entry, plane_idx, arr, px_m)
+            self._features_sidebar.set_status(
+                f"Loaded {entry.stem} (processed, plane {plane_idx}, px = {px_m * 1e12:.1f} pm)")
+            self._status_bar.showMessage(f"{entry.stem} → Feature Counting")
+        elif action == "tv":
+            self._switch_mode("tv")
+            self._tv_panel.load_entry(entry, plane_idx, arr, px_m)
+            self._tv_sidebar.set_status(
+                f"Loaded {entry.stem} (processed, plane {plane_idx}). Adjust parameters and Run.")
+            self._status_bar.showMessage(f"{entry.stem} → TV Denoising")
 
     # ── Convert ────────────────────────────────────────────────────────────────
     def _update_count(self, text: str = ""):
