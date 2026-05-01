@@ -21,7 +21,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
 from PySide6.QtCore import (
-    Qt, QObject, QRect, QRunnable, QThreadPool, QTimer, QSize, Signal, Slot,
+    Qt, QEvent, QObject, QProcess, QRect, QRunnable, QThreadPool, QTimer,
+    QSize, Signal, Slot,
 )
 from PySide6.QtGui import (
     QAction, QBrush, QColor, QCursor, QFont, QImage, QMovie, QPainter, QPen,
@@ -3857,7 +3858,6 @@ class DeveloperTerminalWidget(QWidget):
         input_row.addWidget(clear_btn)
         lay.addLayout(input_row)
 
-        from PySide6.QtCore import QProcess
         self._process = QProcess(self)
         self._process.setProcessChannelMode(QProcess.MergedChannels)
         self._process.readyReadStandardOutput.connect(self._on_output)
@@ -3883,7 +3883,7 @@ class DeveloperTerminalWidget(QWidget):
         cmd = self._input.text().strip()
         if not cmd:
             return
-        if self._process.state() != 0:  # QProcess.NotRunning == 0
+        if self._process.state() != QProcess.NotRunning:
             self._output.appendPlainText("[Previous command still running — wait or clear]")
             return
         self._history = [c for c in self._history if c != cmd]
@@ -3916,9 +3916,7 @@ class DeveloperTerminalWidget(QWidget):
         self._output.appendPlainText(f"[process error: {error}]")
 
     def eventFilter(self, obj, event):
-        from PySide6.QtCore import QEvent
         if obj is self._input and event.type() == QEvent.KeyPress:
-            from PySide6.QtGui import QKeyEvent
             key = event.key()
             if key == Qt.Key_Up and self._history:
                 self._history_idx = min(self._history_idx + 1, len(self._history) - 1)
