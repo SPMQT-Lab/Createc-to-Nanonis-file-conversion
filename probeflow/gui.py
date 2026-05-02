@@ -3750,6 +3750,252 @@ class Navbar(QWidget):
             btn.setStyleSheet(btn_qss)
 
 
+# ── Processing definitions panel ──────────────────────────────────────────────
+_DEFINITIONS_HTML = """
+<style>
+  body  { font-family: Helvetica, Arial, sans-serif; font-size: 13px;
+          color: #cdd6f4; background: transparent; margin: 0; padding: 0; }
+  h1    { font-size: 15px; color: #cba6f7; margin: 0 0 12px 0; }
+  h2    { font-size: 13px; color: #89b4fa; margin: 18px 0 2px 0; }
+  .sub  { font-size: 11px; color: #a6adc8; font-style: italic; margin: 0 0 4px 0; }
+  p     { margin: 3px 0 6px 0; line-height: 1.45; }
+  .kw   { color: #f38ba8; font-family: monospace; }
+  .param{ color: #a6e3a1; font-family: monospace; }
+  .note { color: #fab387; }
+  hr    { border: none; border-top: 1px solid #45475a; margin: 14px 0; }
+</style>
+<body>
+<h1>Processing Algorithm Reference</h1>
+<p>Each step transforms the raw height data. Steps are applied in the order
+listed in the viewer's processing panel. All functions operate on
+float64 arrays in physical metres — no display-unit clipping involved.</p>
+<hr/>
+
+<h2>remove_bad_lines</h2>
+<p class="sub">Params: <span class="param">threshold_mad</span> (default 5.0),
+<span class="param">method</span> = mad | step</p>
+<p><b>mad (default):</b> Computes the median of each row and flags rows whose
+median deviates from the image-wide median by more than
+<span class="param">threshold_mad</span> &times; MAD (median absolute deviation of row
+medians).  Flagged rows are replaced by a distance-weighted column-wise blend
+of the nearest good rows above and below.  Self-calibrating — works without
+knowing physical step heights.  Best for tip crashes and vibration bursts that
+shift an entire row.</p>
+<p><b>step:</b> Scans each column top-to-bottom and detects transitions where
+the pixel-to-pixel step exceeds an auto-computed threshold.  The elevated
+region between a positive and subsequent negative crossing is flagged and
+interpolated per-column.  Handles <em>partial</em> bad lines (only some
+columns affected) and isolated pixel spikes that the row-median detector
+misses.  Based on the ImageJ Remove_Bad_Lines plugin by M.&nbsp;Schmid.</p>
+
+<hr/>
+
+<h2>align_rows</h2>
+<p class="sub">Params: <span class="param">method</span> = median | mean | linear</p>
+<p>Removes per-row DC offsets — the most common first step for raw STM data,
+where each scan line has an independent height datum due to thermal drift or
+tip jumps between lines.</p>
+<p><b>median:</b> Subtracts each row's median.  Robust to tip crashes and
+outlier pixels within a row.  <b>mean:</b> Subtracts each row's mean — faster
+but sensitive to outliers.  <b>linear:</b> Fits and subtracts a first-order
+polynomial (slope + offset) per row, correcting both offset and tilt within
+each scan line.</p>
+
+<hr/>
+
+<h2>plane_bg (subtract_background)</h2>
+<p class="sub">Params: <span class="param">order</span> 1–4,
+<span class="param">step_tolerance</span>, optional <span class="param">fit_geometry</span></p>
+<p>Fits a 2-D polynomial background to the image and subtracts it.  The
+polynomial basis contains all monomials x<sup>i</sup>&nbsp;y<sup>j</sup> with
+i+j &le; order (6 terms for order=2, 10 for order=3).  Coordinates are
+normalised to [&minus;1,&nbsp;1] for numerical stability.  The fit uses only
+finite pixels and, optionally, only pixels inside a user-drawn ROI
+(<span class="param">fit_geometry</span>).</p>
+<p><b>order=1</b> (plane): equivalent to ImageJ's "Subtract Plane" /
+<em>Fit_Polynomial("linear")</em>.  <b>step_tolerance:</b> excludes steep
+pixels (gradient &gt; tan(3&deg;)) from the fit so that atomic steps do not
+bias the background — analogous to the "step tolerant" area mode in the ImageJ
+STM_Background plugin.</p>
+
+<hr/>
+
+<h2>stm_line_bg (stm_line_background)</h2>
+<p class="sub">Params: <span class="param">mode</span> = step_tolerant</p>
+<p>Corrects inter-line height offsets in images with atomic steps.  For each
+pair of adjacent scan lines, estimates the dominant row-to-row shift from the
+<em>modal peak</em> of the distribution of pixelwise row differences.  The
+modal peak tracks the most common shift (the flat terrace baseline) rather than
+the mean, so step edges — which produce large, infrequent differences — do not
+bias the correction.  A cumulative shift profile is built and subtracted.</p>
+<p class="note">Addresses the same artefact as the ImageJ STM_Background
+"line by line" mode, but uses the modal estimator instead of the median for
+better step tolerance.  Does not model slow background curvature; combine with
+plane_bg for that.</p>
+
+<hr/>
+
+<h2>facet_level</h2>
+<p class="sub">Params: <span class="param">threshold_deg</span> (default 3.0)</p>
+<p>Levels the image using only the nearly-flat pixels as the reference plane.
+Local surface slope is estimated via central finite differences; pixels whose
+slope angle exceeds <span class="param">threshold_deg</span> are excluded from
+the plane fit.  The fitted plane is subtracted from the whole image.  Analogous
+to Gwyddion's "Facet Level" — essential for stepped surfaces (Au(111), Si(111))
+where step edges would bias a naive plane fit.</p>
+
+<hr/>
+
+<h2>smooth (gaussian_smooth)</h2>
+<p class="sub">Params: <span class="param">sigma_px</span> (default 1.0)</p>
+<p>Isotropic 2-D Gaussian blur.  NaN pixels are handled by weighted
+normalisation (a NaN never propagates into its neighbours).  Typical STM
+values: 0.5–2&nbsp;px.  Equivalent to ImageJ's Gaussian blur on float data.</p>
+
+<hr/>
+
+<h2>gaussian_high_pass</h2>
+<p class="sub">Params: <span class="param">sigma_px</span> (default 8.0)</p>
+<p>Subtracts a Gaussian-blurred version of the image from itself, retaining
+only high-spatial-frequency detail.  Output = original &minus; blur(original).
+Equivalent to the ImageJ "Highpass" plugin (M.&nbsp;Schmid): the ImageJ version
+adds an integer offset for byte/short images; for float data the offset is zero,
+so the algorithms are identical.</p>
+
+<hr/>
+
+<h2>fft_soft_border</h2>
+<p class="sub">Params: <span class="param">mode</span> low_pass|high_pass,
+<span class="param">cutoff</span> [0–1], <span class="param">border_frac</span></p>
+<p>FFT-based frequency filter with a Tukey-tapered border.  Before
+transforming, pixels within <span class="param">border_frac</span> of any edge
+are smoothly ramped to the image mean, eliminating the wrap-around
+discontinuity that causes ringing artefacts in DFT-based filters.  After the
+inverse FFT, the taper is compensated so the image interior is preserved.
+The <span class="kw">low_pass</span> mode keeps frequencies inside a radial
+cutoff (fraction of Nyquist); <span class="kw">high_pass</span> keeps
+frequencies outside.</p>
+<p class="note">The name is inherited from the ImageJ FFT_Soft_Border plugin
+(M.&nbsp;Schmid), but the operations differ: the ImageJ plugin computed only
+the forward FFT spectrum for display.  This implementation is a complete
+forward+filter+inverse pipeline returning a filtered image.</p>
+
+<hr/>
+
+<h2>fourier_filter</h2>
+<p class="sub">Params: <span class="param">mode</span> low_pass|high_pass,
+<span class="param">cutoff</span>, <span class="param">window</span> hanning|hamming|none</p>
+<p>Global radial FFT filter without border compensation.  A 2-D Hanning (or
+Hamming) window is applied before transforming to reduce edge discontinuities.
+The frequency-domain filter is a hard circular cutoff.  The mean is preserved
+for low-pass; removed for high-pass.</p>
+
+<hr/>
+
+<h2>periodic_notch_filter</h2>
+<p class="sub">Params: <span class="param">peaks</span> list of (dx,dy),
+<span class="param">radius_px</span></p>
+<p>Suppresses selected periodic FFT peaks and their Hermitian conjugates using
+Gaussian notches.  Peaks are specified as integer pixel offsets from the
+centred FFT origin.  Used to remove lattice periodicity from topography so that
+defects and adsorbates stand out.</p>
+<p class="note">Complementary to (not a port of) the ImageJ Periodic_Filter
+(M.&nbsp;Schmid), which <em>extracts</em> the periodic component by convolution
+with a lattice-frequency kernel.  Notch removal is the standard workflow for
+defect imaging; the ImageJ bandpass extraction is useful for lattice
+characterisation.</p>
+
+<hr/>
+
+<h2>patch_interpolate</h2>
+<p class="sub">Params: <span class="param">method</span> line_fit|laplace,
+<span class="param">rim_px</span> (default 20),
+<span class="param">iterations</span> (laplace only, default 200)</p>
+<p><b>line_fit (default):</b> For each masked row, fits a linear function to
+the non-masked pixels within <span class="param">rim_px</span> columns of the
+masked boundary (the "rim"), then extrapolates that line through the masked
+columns.  This preserves the local surface slope — physically correct for STM
+scan-line repair where nearby scan lines share the same tilt.  Based on the
+ImageJ Patch_Interpolation plugin (M.&nbsp;Schmid), mode "lines with individual
+slopes".  Rows with no rim data fall back to row-blended interpolation from
+vertical neighbours.</p>
+<p><b>laplace:</b> Iterative Jacobi relaxation of the discrete Laplace
+equation: each masked pixel converges to the average of its four neighbours.
+Isotropic and smooth, but does not preserve scan-line slope — creates
+artificial height bumps on sloped terraces.  Useful for non-directional patches
+(e.g., circular defect sites away from step edges).</p>
+
+<hr/>
+
+<h2>linear_undistort</h2>
+<p class="sub">Params: <span class="param">shear_x</span> (px),
+<span class="param">scale_y</span></p>
+<p>Affine drift/creep correction.  <span class="param">shear_x</span> is the
+total horizontal pixel drift accumulated over the slow-scan height (positive =
+right drift).  <span class="param">scale_y</span> corrects a y/x pixel-size
+mismatch.  Each output pixel is bilinearly interpolated from the input.
+Equivalent to the ImageJ Linear_Undistort plugin (M.&nbsp;Schmid);
+parameterisation differs: ImageJ uses shear angle in degrees and a y/x ratio,
+with the conversion: shear_x&nbsp;=&nbsp;tan(angle)&nbsp;&times;&nbsp;scale_y&nbsp;&times;&nbsp;(Ny&minus;1).</p>
+
+<hr/>
+
+<h2>blend_forward_backward</h2>
+<p class="sub">Params: <span class="param">weight</span> (default 0.5)</p>
+<p>Blends a forward scan plane with a left-right-mirrored backward scan plane.
+The backward scan is automatically flipped before blending because it is
+recorded right-to-left in the fast-scan direction.  This differs from the
+ImageJ Blend_Images plugin (M.&nbsp;Schmid), which does a generic weighted
+sum without flipping — the flip is required for correct physical alignment of
+STM forward/backward pairs.</p>
+
+<hr/>
+
+<h2>edge_detect</h2>
+<p class="sub">Params: <span class="param">method</span> laplacian|log|dog,
+<span class="param">sigma</span>, <span class="param">sigma2</span></p>
+<p><b>laplacian:</b> Discrete second-derivative operator — enhances sharp
+edges and atomic corrugation peaks.  <b>log (Laplacian of Gaussian):</b>
+Pre-smooths with a Gaussian of width <span class="param">sigma</span> before
+applying the Laplacian; reduces noise sensitivity.  <b>dog (Difference of
+Gaussians):</b> Difference between two Gaussians of width
+<span class="param">sigma</span> and <span class="param">sigma2</span> — a
+band-pass approximation to the LoG, useful for isolating features of a
+specific spatial scale.</p>
+</body>
+"""
+
+
+class _DefinitionsPanel(QWidget):
+    """Scrollable reference panel listing every processing algorithm."""
+
+    def __init__(self, t: dict, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        inner = QTextEdit()
+        inner.setReadOnly(True)
+        inner.setHtml(_DEFINITIONS_HTML)
+        inner.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {t.get('bg', '#1e1e2e')};
+                border: none;
+                padding: 16px;
+            }}
+        """)
+        inner.document().setDefaultStyleSheet(
+            f"body {{ color: {t.get('fg', '#cdd6f4')}; }}"
+        )
+
+        scroll.setWidget(inner)
+        lay.addWidget(scroll)
+
+
 # ── Developer terminal sidebar ────────────────────────────────────────────────
 class _DevSidebar(QWidget):
     """Sidebar for the Dev tab: shows cwd, quick links, and info."""
@@ -4191,8 +4437,9 @@ class ProbeFlowWindow(QMainWindow):
         self._tab_features = QPushButton("FeatureCounting")
         self._tab_tv       = QPushButton("TV-denoise")
         self._tab_dev      = QPushButton("Dev")
+        self._tab_defs     = QPushButton("Defs")
         for btn in (self._tab_browse, self._tab_convert, self._tab_features,
-                    self._tab_tv, self._tab_dev):
+                    self._tab_tv, self._tab_dev, self._tab_defs):
             btn.setFont(QFont("Helvetica", 11, QFont.Bold))
             btn.setFixedHeight(44)
             btn.setCursor(QCursor(Qt.PointingHandCursor))
@@ -4204,6 +4451,7 @@ class ProbeFlowWindow(QMainWindow):
         self._tab_features.clicked.connect(lambda: self._switch_mode("features"))
         self._tab_tv.clicked.connect(lambda: self._switch_mode("tv"))
         self._tab_dev.clicked.connect(lambda: self._switch_mode("dev"))
+        self._tab_defs.clicked.connect(lambda: self._switch_mode("defs"))
         v_lay.addWidget(self._tab_bar)
 
         # Body splitter
@@ -4236,6 +4484,8 @@ class ProbeFlowWindow(QMainWindow):
         self._content_stack.addWidget(self._features_panel)
         self._content_stack.addWidget(self._tv_panel)
         self._content_stack.addWidget(self._dev_terminal)
+        self._defs_panel     = _DefinitionsPanel(t)
+        self._content_stack.addWidget(self._defs_panel)
         self._splitter.addWidget(self._content_stack)
 
         # ── Right: sidebar stack ───────────────────────────────────────────────
@@ -4251,6 +4501,8 @@ class ProbeFlowWindow(QMainWindow):
         self._sidebar_stack.addWidget(self._features_sidebar)
         self._sidebar_stack.addWidget(self._tv_sidebar)
         self._sidebar_stack.addWidget(self._dev_sidebar)
+        self._defs_sidebar   = QWidget()
+        self._sidebar_stack.addWidget(self._defs_sidebar)
         self._splitter.addWidget(self._sidebar_stack)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 0)
@@ -4330,6 +4582,11 @@ class ProbeFlowWindow(QMainWindow):
             self._sidebar_stack.setCurrentIndex(4)
             self._status_bar.showMessage(
                 "Developer terminal — run shell commands and Python scripts")
+        elif mode == "defs":
+            self._content_stack.setCurrentIndex(5)
+            self._sidebar_stack.setCurrentIndex(5)
+            self._status_bar.showMessage(
+                "Processing algorithm reference — definitions and scientific details")
         else:
             self._content_stack.setCurrentIndex(1)
             self._sidebar_stack.setCurrentIndex(1)
@@ -4342,7 +4599,8 @@ class ProbeFlowWindow(QMainWindow):
                           (self._tab_convert, "convert"),
                           (self._tab_features, "features"),
                           (self._tab_tv, "tv"),
-                          (self._tab_dev, "dev")):
+                          (self._tab_dev, "dev"),
+                          (self._tab_defs, "defs")):
             active = (self._mode == name)
             if active:
                 btn.setStyleSheet(f"""

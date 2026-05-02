@@ -487,6 +487,137 @@ Covers:
 
 ---
 
+## Processing Algorithms — Technical Reference
+
+This section describes what each numerical processing step does and the scientific choices behind it.  Algorithms were validated against reference ImageJ STM plugins by Michael Schmid.
+
+### remove_bad_lines
+
+Detects scan lines whose values are statistical outliers and replaces them by interpolation from neighbouring rows.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `method` | `"mad"` | Detection strategy: `"mad"` (row-level Median Absolute Deviation) or `"step"` (column-level step detection) |
+| `threshold_mad` | `5.0` | MAD multiplier; higher = more tolerant |
+
+**`"mad"` method** — computes the median row offset (difference between each row's median and the global median). Rows whose offset exceeds `threshold_mad × MAD` are flagged as fully bad and replaced by linear interpolation from the nearest good rows above and below.  Robust to global tilt and step edges.
+
+**`"step"` method** — scans each column independently for large vertical jumps. A column pixel is marked bad if it sits inside an upward step (entry) that has not yet been closed by a downward step of equal magnitude. The threshold is derived from the MAD of all inter-row differences across the image, scaled by `threshold_mad`. This can catch *partial* bad lines (stripe artifacts that affect only part of a row) that the MAD method misses, matching the ImageJ approach.
+
+### align_rows
+
+Removes the inter-row DC offset that accumulates during a raster scan.  Each row's median (or mean) is subtracted independently so that neighbouring rows align.  Does not affect within-row variation or surface slope.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `method` | `"median"` | `"median"` (robust) or `"mean"` |
+
+### plane_bg / subtract_background
+
+Fits and subtracts a polynomial background plane (order 1 = flat tilt, order 2 = parabolic bow).  An optional ROI geometry (`fit_geometry`) restricts the fit to a user-drawn region, so that islands or step edges are excluded from the fit.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `order` | `1` | Polynomial order (1–3) |
+| `step_tolerance` | `False` | Segment rows at large steps before fitting |
+| `fit_geometry` | `None` | ROI dict limiting pixels used for the fit |
+
+### stm_line_bg
+
+Line-by-line background subtraction tuned for STM images with step edges.  Each row is fitted and subtracted separately in a step-tolerant way, preventing step-edge height from biasing the background fit.  Equivalent to the ImageJ `STM_Background` plugin approach.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `mode` | `"step_tolerant"` | `"step_tolerant"` or `"linear"` |
+
+### facet_level
+
+Detects atomically flat terraces using an angular-threshold criterion (pixels within `threshold_deg` degrees of horizontal are considered terrace pixels) and levels each terrace to a common height.  Useful for multi-terrace STM images where a single plane fit would tilt the result.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `threshold_deg` | `3.0` | Angular tolerance for terrace classification |
+
+### smooth
+
+Gaussian low-pass filter applied in real space.  Reduces high-frequency noise while preserving large-scale features.  `sigma_px` controls the blur radius in pixels.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `sigma_px` | `1.0` | Gaussian σ in pixels |
+
+### gaussian_high_pass
+
+Subtracts a Gaussian-blurred version of the image from the original (equivalent to a high-pass filter in frequency space).  Enhances short-range features such as atomic corrugation while removing long-range background.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `sigma_px` | `8.0` | σ of the subtracted Gaussian |
+
+### fft_soft_border
+
+Fourier-domain low-pass or high-pass filter with a soft (cosine-tapered) border applied before the FFT to suppress ringing.  The border taper blends the image edges to their mean, so that periodic boundary conditions imposed by the FFT do not introduce streak artefacts.  Matches the ImageJ `FFT_Soft_Border` plugin.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `mode` | `"low_pass"` | `"low_pass"` or `"high_pass"` |
+| `cutoff` | `0.10` | Normalised frequency cutoff (0–0.5) |
+| `border_frac` | `0.12` | Fraction of image width used for the taper |
+
+### fourier_filter
+
+General Fourier-domain filter without the soft-border taper.  Suitable when edge artefacts are not a concern (e.g. when the image has already been windowed or the scan area is large relative to the feature of interest).
+
+| Parameter | Default | Description |
+|---|---|---|
+| `mode` | `"low_pass"` | `"low_pass"` or `"high_pass"` |
+| `cutoff` | `0.10` | Normalised frequency cutoff |
+| `window` | `"hanning"` | Window function applied before FFT |
+
+### periodic_notch_filter
+
+Suppresses periodic noise by zeroing a disc of radius `radius_px` around each specified peak in the FFT magnitude spectrum.  The `peaks` list contains `[qx, qy]` pairs in normalised frequency coordinates.  Conjugate peaks are automatically included.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `peaks` | `[]` | List of `[qx, qy]` frequency-space peak positions |
+| `radius_px` | `3.0` | Notch radius in FFT pixels |
+
+### patch_interpolate
+
+Fills a masked region (e.g. a defect or scan artefact) by interpolating from the surrounding data.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `method` | `"line_fit"` | `"line_fit"` (recommended) or `"laplace"` |
+| `rim_px` | `20` | Width of rim used for slope estimation in `"line_fit"` |
+| `iterations` | `200` | Iterations for `"laplace"` relaxation |
+
+**`"line_fit"` (default)** — for each masked row, fits a straight line through the unmasked rim pixels immediately to the left and right of the masked segment and extrapolates across it.  This preserves the local surface slope across the patch, which is essential for STM terraces: a flat-terrace repair that introduces a tilt artefact would create a phantom step.  Rows that are entirely masked are filled by interpolation from neighbouring rows.  This matches the ImageJ `Patch_Interpolation` algorithm.
+
+**`"laplace"`** — iterative harmonic (Laplace) relaxation inside the mask.  Isotropic and smooth, but does *not* preserve scan-line slope.  Retained for cases where the slope-preserving fit is unsuitable (e.g. non-STM data with genuinely isotropic structure).
+
+### linear_undistort
+
+Corrects linear geometric distortions introduced by piezo creep or cross-coupling: a shear along x and a scale along y.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `shear_x` | `0.0` | Shear coefficient (pixels of x shift per row) |
+| `scale_y` | `1.0` | Vertical scale factor |
+
+### edge_detect
+
+Applies a derivative-based edge-detection kernel.  Useful for visualising atomic step edges or grain boundaries.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `method` | `"laplacian"` | `"laplacian"`, `"sobel"`, or `"dog"` (difference of Gaussians) |
+| `sigma` | `1.0` | Primary Gaussian σ |
+| `sigma2` | `2.0` | Secondary σ for `"dog"` |
+
+---
+
 ## Notes
 
 * The `.sxm` timestamp parser expects Createc filenames of the form `AyyMMdd.HHmmss.dat`.
