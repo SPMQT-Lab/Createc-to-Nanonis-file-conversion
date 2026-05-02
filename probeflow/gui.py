@@ -553,6 +553,347 @@ class ProcessingControlPanel(QWidget):
         self._fft_soft_cb.setChecked(bool(state.get("fft_soft_border", False)))
 
 
+class FFTViewerDialog(QDialog):
+    """Side-by-side real-space / FFT inspection window."""
+
+    def __init__(
+        self,
+        arr: np.ndarray,
+        scan_range_m: tuple,
+        colormap: str = "gray",
+        theme: dict | None = None,
+        channel_unit: tuple | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("FFT Viewer")
+        self.resize(1000, 540)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        self._arr = arr.astype(np.float64, copy=True)
+        self._scan_range_m = scan_range_m
+        self._colormap = colormap
+        self._theme = theme or {}
+        self._ch_unit = channel_unit  # (scale, unit, axis_label) or None
+
+        self._fft_mag: np.ndarray | None = None
+        self._qx: np.ndarray | None = None
+        self._qy: np.ndarray | None = None
+        self._fft_xlim: tuple = (0.0, 1.0)
+        self._fft_ylim: tuple = (1.0, 0.0)
+        self._scale_mode = "log"
+        self._window_mode = "hann"
+        self._dc_mode = "zero"
+        self._pan_anchor: tuple | None = None
+
+        self._build()
+        self._recompute_fft()
+        self._redraw()
+
+    # ── layout ─────────────────────────────────────────────────────────────────
+
+    def _build(self):
+        bg = self._theme.get("bg", "#1e1e1e")
+        fg = self._theme.get("fg", "#dddddd")
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(4)
+        lay.setContentsMargins(6, 6, 6, 4)
+
+        # toolbar
+        tb = QHBoxLayout()
+        tb.setSpacing(6)
+
+        def _lbl(text):
+            lb = QLabel(text)
+            lb.setFont(QFont("Helvetica", 8))
+            return lb
+
+        def _combo(items):
+            c = QComboBox()
+            c.addItems(items)
+            c.setFont(QFont("Helvetica", 8))
+            c.setFixedHeight(22)
+            return c
+
+        tb.addWidget(_lbl("Scale:"))
+        self._scale_combo = _combo(["Log", "Linear"])
+        self._scale_combo.currentIndexChanged.connect(self._on_scale_changed)
+        tb.addWidget(self._scale_combo)
+
+        tb.addWidget(_lbl("Window:"))
+        self._window_combo = _combo(["Hann", "None", "Tukey"])
+        self._window_combo.currentIndexChanged.connect(self._on_window_changed)
+        tb.addWidget(self._window_combo)
+
+        tb.addWidget(_lbl("DC:"))
+        self._dc_combo = _combo(["Zero DC", "Keep DC", "Mask DC"])
+        self._dc_combo.currentIndexChanged.connect(self._on_dc_changed)
+        tb.addWidget(self._dc_combo)
+
+        tb.addStretch(1)
+
+        for label, slot in [
+            ("Fit",  self._zoom_fit),
+            ("⌂",   self._zoom_centre),
+            ("+",   lambda: self._zoom_by(0.5)),
+            ("−",   lambda: self._zoom_by(2.0)),
+        ]:
+            btn = QPushButton(label)
+            btn.setFont(QFont("Helvetica", 8))
+            btn.setFixedSize(28, 22)
+            btn.clicked.connect(slot)
+            tb.addWidget(btn)
+
+        tb.addSpacing(8)
+        exp_btn = QPushButton("Export PNG…")
+        exp_btn.setFont(QFont("Helvetica", 8))
+        exp_btn.setFixedHeight(22)
+        exp_btn.clicked.connect(self._on_export)
+        tb.addWidget(exp_btn)
+
+        lay.addLayout(tb)
+
+        # figure
+        self._fig = Figure(figsize=(10.0, 4.8), dpi=90)
+        self._fig.patch.set_facecolor(bg)
+        self._canvas = FigureCanvasQTAgg(self._fig)
+        lay.addWidget(self._canvas, 1)
+
+        self._ax_real = self._fig.add_subplot(121)
+        self._ax_fft  = self._fig.add_subplot(122)
+        for ax in (self._ax_real, self._ax_fft):
+            ax.set_facecolor(bg)
+            for spine in ax.spines.values():
+                spine.set_color(fg)
+            ax.tick_params(colors=fg, labelsize=7)
+
+        self._fig.subplots_adjust(left=0.07, right=0.97, top=0.95, bottom=0.10, wspace=0.30)
+
+        # status bar
+        self._status_lbl = QLabel("")
+        self._status_lbl.setFont(QFont("Helvetica", 7))
+        self._status_lbl.setAlignment(Qt.AlignLeft)
+        lay.addWidget(self._status_lbl)
+
+        self._canvas.mpl_connect("scroll_event",         self._on_scroll)
+        self._canvas.mpl_connect("button_press_event",   self._on_press)
+        self._canvas.mpl_connect("button_release_event", self._on_release)
+        self._canvas.mpl_connect("motion_notify_event",  self._on_motion)
+
+    # ── FFT computation ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _tukey_1d(N: int, alpha: float = 0.5) -> np.ndarray:
+        w = np.ones(N, dtype=np.float64)
+        ramp = int(alpha * N / 2)
+        if ramp > 0:
+            t = np.linspace(0, 1, ramp)
+            w[:ramp] = 0.5 * (1 - np.cos(np.pi * t))
+            w[N - ramp:] = w[:ramp][::-1]
+        return w
+
+    def _make_window(self) -> np.ndarray:
+        Ny, Nx = self._arr.shape
+        if self._window_mode == "hann":
+            return np.outer(np.hanning(Ny), np.hanning(Nx))
+        if self._window_mode == "tukey":
+            return np.outer(self._tukey_1d(Ny), self._tukey_1d(Nx))
+        return np.ones((Ny, Nx), dtype=np.float64)
+
+    def _recompute_fft(self):
+        arr = self._arr.copy()
+        finite = arr[np.isfinite(arr)]
+        arr[~np.isfinite(arr)] = float(np.nanmedian(finite)) if finite.size > 0 else 0.0
+        arr -= arr.mean()
+        arr *= self._make_window()
+
+        F = np.fft.fftshift(np.fft.fft2(arr))
+        self._fft_mag = np.abs(F)
+
+        Ny, Nx = arr.shape
+        try:
+            w_nm = float(self._scan_range_m[0]) * 1e9
+            h_nm = float(self._scan_range_m[1]) * 1e9
+            dx_nm = w_nm / Nx if Nx > 0 else 1.0
+            dy_nm = h_nm / Ny if Ny > 0 else 1.0
+        except (TypeError, ValueError, IndexError):
+            dx_nm, dy_nm = 1.0, 1.0
+
+        self._qx = np.fft.fftshift(np.fft.fftfreq(Nx, d=dx_nm))
+        self._qy = np.fft.fftshift(np.fft.fftfreq(Ny, d=dy_nm))
+        self._fft_xlim = (float(self._qx[0]),  float(self._qx[-1]))
+        self._fft_ylim = (float(self._qy[-1]), float(self._qy[0]))
+
+    def _compute_display_fft(self) -> np.ndarray:
+        mag = self._fft_mag.copy()
+        Ny, Nx = mag.shape
+        cy, cx = Ny // 2, Nx // 2
+        r = max(1, min(Ny, Nx) // 60)
+        y0, y1 = max(0, cy - r), min(Ny, cy + r + 1)
+        x0, x1 = max(0, cx - r), min(Nx, cx + r + 1)
+        if self._dc_mode == "zero":
+            mag[y0:y1, x0:x1] = 0.0
+        elif self._dc_mode == "mask":
+            mag = mag.astype(np.float64)
+            mag[y0:y1, x0:x1] = np.nan
+        if self._scale_mode == "log":
+            mag = np.log1p(mag)
+        return mag
+
+    # ── drawing ────────────────────────────────────────────────────────────────
+
+    def _redraw(self):
+        bg = self._theme.get("bg", "#1e1e1e")
+        fg = self._theme.get("fg", "#dddddd")
+
+        ax = self._ax_real
+        ax.cla()
+        ax.set_facecolor(bg)
+        try:
+            w_nm = float(self._scan_range_m[0]) * 1e9
+            h_nm = float(self._scan_range_m[1]) * 1e9
+        except Exception:
+            w_nm, h_nm = float(self._arr.shape[1]), float(self._arr.shape[0])
+        ax.imshow(
+            self._arr, cmap=self._colormap, origin="upper",
+            extent=[0, w_nm, h_nm, 0], aspect="equal",
+        )
+        ax.set_title("Real space", fontsize=8, color=fg)
+        ax.set_xlabel("nm", fontsize=7, color=fg)
+        ax.set_ylabel("nm", fontsize=7, color=fg)
+        ax.tick_params(colors=fg, labelsize=7)
+        for spine in ax.spines.values():
+            spine.set_color(fg)
+
+        ax = self._ax_fft
+        ax.cla()
+        ax.set_facecolor(bg)
+        disp = self._compute_display_fft()
+        extent_q = [
+            float(self._qx[0]), float(self._qx[-1]),
+            float(self._qy[-1]), float(self._qy[0]),
+        ]
+        ax.imshow(
+            disp, cmap="inferno", origin="upper",
+            extent=extent_q, aspect="equal",
+        )
+        ax.set_xlim(*self._fft_xlim)
+        ax.set_ylim(*self._fft_ylim)
+        scale_lbl = "log|FFT|" if self._scale_mode == "log" else "|FFT|"
+        ax.set_title(f"FFT  ({scale_lbl})", fontsize=8, color=fg)
+        ax.set_xlabel("q_x  (nm⁻¹)", fontsize=7, color=fg)
+        ax.set_ylabel("q_y  (nm⁻¹)", fontsize=7, color=fg)
+        ax.tick_params(colors=fg, labelsize=7)
+        for spine in ax.spines.values():
+            spine.set_color(fg)
+        ax.axhline(0, color=fg, lw=0.4, alpha=0.35)
+        ax.axvline(0, color=fg, lw=0.4, alpha=0.35)
+
+        self._canvas.draw_idle()
+
+    # ── zoom / pan ─────────────────────────────────────────────────────────────
+
+    def _zoom_fit(self):
+        self._fft_xlim = (float(self._qx[0]),  float(self._qx[-1]))
+        self._fft_ylim = (float(self._qy[-1]), float(self._qy[0]))
+        self._ax_fft.set_xlim(*self._fft_xlim)
+        self._ax_fft.set_ylim(*self._fft_ylim)
+        self._canvas.draw_idle()
+
+    def _zoom_centre(self):
+        qx_half = (float(self._qx[-1]) - float(self._qx[0])) * 0.25
+        qy_half = (float(self._qy[-1]) - float(self._qy[0])) * 0.25
+        self._fft_xlim = (-qx_half,  qx_half)
+        self._fft_ylim = (-qy_half, qy_half)
+        self._ax_fft.set_xlim(*self._fft_xlim)
+        self._ax_fft.set_ylim(*self._fft_ylim)
+        self._canvas.draw_idle()
+
+    def _zoom_by(self, factor: float, cx: float | None = None, cy: float | None = None):
+        xl, xr = self._fft_xlim
+        yb, yt = self._fft_ylim
+        xc = cx if cx is not None else (xl + xr) / 2
+        yc = cy if cy is not None else (yb + yt) / 2
+        self._fft_xlim = (xc + (xl - xc) * factor, xc + (xr - xc) * factor)
+        self._fft_ylim = (yc + (yb - yc) * factor, yc + (yt - yc) * factor)
+        self._ax_fft.set_xlim(*self._fft_xlim)
+        self._ax_fft.set_ylim(*self._fft_ylim)
+        self._canvas.draw_idle()
+
+    # ── canvas events ──────────────────────────────────────────────────────────
+
+    def _on_scroll(self, event):
+        if event.inaxes is not self._ax_fft:
+            return
+        factor = 0.65 if event.step > 0 else 1.0 / 0.65
+        self._zoom_by(factor, event.xdata, event.ydata)
+
+    def _on_press(self, event):
+        if event.inaxes is self._ax_fft and event.button == 1:
+            self._pan_anchor = (
+                event.xdata, event.ydata,
+                self._fft_xlim, self._fft_ylim,
+            )
+
+    def _on_release(self, event):
+        self._pan_anchor = None
+
+    def _on_motion(self, event):
+        if self._pan_anchor is not None and event.inaxes is self._ax_fft:
+            x0, y0, xlim0, ylim0 = self._pan_anchor
+            dx = x0 - event.xdata
+            dy = y0 - event.ydata
+            self._fft_xlim = (xlim0[0] + dx, xlim0[1] + dx)
+            self._fft_ylim = (ylim0[0] + dy, ylim0[1] + dy)
+            self._ax_fft.set_xlim(*self._fft_xlim)
+            self._ax_fft.set_ylim(*self._fft_ylim)
+            self._canvas.draw_idle()
+
+        if event.inaxes is self._ax_fft and event.xdata is not None:
+            qx, qy = event.xdata, event.ydata
+            q = np.hypot(qx, qy)
+            if q > 0:
+                d_nm = 1.0 / q
+                d_str = f"{d_nm:.2f} nm" if d_nm >= 1.0 else f"{d_nm * 10:.2f} Å"
+            else:
+                d_str = "∞"
+            theta = np.degrees(np.arctan2(qy, qx))
+            self._status_lbl.setText(
+                f"q_x={qx:+.3f}  q_y={qy:+.3f}  |q|={q:.3f} nm⁻¹  "
+                f"d={d_str}  θ={theta:.1f}°"
+            )
+        elif event.inaxes is self._ax_real and event.xdata is not None:
+            self._status_lbl.setText(
+                f"x={event.xdata:.2f} nm  y={event.ydata:.2f} nm"
+            )
+        else:
+            self._status_lbl.setText("")
+
+    # ── toolbar callbacks ──────────────────────────────────────────────────────
+
+    def _on_scale_changed(self, idx: int):
+        self._scale_mode = "log" if idx == 0 else "linear"
+        self._redraw()
+
+    def _on_window_changed(self, idx: int):
+        self._window_mode = ["hann", "none", "tukey"][idx]
+        self._recompute_fft()
+        self._redraw()
+
+    def _on_dc_changed(self, idx: int):
+        self._dc_mode = ["zero", "keep", "mask"][idx]
+        self._redraw()
+
+    def _on_export(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export FFT view", "fft_view.png",
+            "PNG image (*.png);;All files (*)"
+        )
+        if path:
+            self._fig.savefig(path, dpi=150, bbox_inches="tight")
+
+
 class PeriodicFilterDialog(QDialog):
     """Interactive centred-FFT peak picker for periodic notch filtering."""
 
@@ -1100,6 +1441,15 @@ class ImageViewerDialog(QDialog):
         periodic_btn.setFixedHeight(24)
         periodic_btn.clicked.connect(self._on_periodic_filter)
         advanced_lay.addWidget(periodic_btn)
+
+        fft_viewer_btn = QPushButton("FFT viewer…")
+        fft_viewer_btn.setFont(QFont("Helvetica", 8))
+        fft_viewer_btn.setFixedHeight(24)
+        fft_viewer_btn.setToolTip(
+            "Open a side-by-side real-space / FFT window with zoom, pan, "
+            "and cursor readout in nm⁻¹.")
+        fft_viewer_btn.clicked.connect(self._on_open_fft_viewer)
+        advanced_lay.addWidget(fft_viewer_btn)
 
         undistort_lbl = QLabel("Linear undistort (drift)")
         undistort_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
@@ -2072,6 +2422,21 @@ class ImageViewerDialog(QDialog):
         state = state or {}
         self._undistort_shear_spin.setValue(float(state.get("undistort_shear_x", 0.0)))
         self._undistort_scale_spin.setValue(float(state.get("undistort_scale_y", 1.0)))
+
+    def _on_open_fft_viewer(self):
+        arr = self._display_arr if self._display_arr is not None else self._raw_arr
+        if arr is None:
+            self._status_lbl.setText("No image loaded.")
+            return
+        dlg = FFTViewerDialog(
+            arr,
+            self._scan_range_m or (1e-9, 1e-9),
+            colormap=self._colormap,
+            theme=self._t,
+            channel_unit=self._channel_unit(),
+            parent=self,
+        )
+        dlg.show()
 
     def _on_periodic_filter(self):
         arr = self._display_arr if self._display_arr is not None else self._raw_arr
