@@ -276,17 +276,20 @@ class ProcessingControlPanel(QWidget):
         lay.setContentsMargins(4, 2, 0, 2)
         lay.setSpacing(4)
 
-        def _combo_row(label: str, items: list[str]) -> QComboBox:
+        def _combo_row(label: str, items: list[str],
+                       target=None, lbl_width: int = 90) -> QComboBox:
+            if target is None:
+                target = lay
             row = QHBoxLayout()
             lbl = QLabel(label)
             lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(90)
+            lbl.setFixedWidth(lbl_width)
             cb = QComboBox()
             cb.addItems(items)
             cb.setFont(QFont("Helvetica", 8))
             row.addWidget(lbl)
             row.addWidget(cb, 1)
-            lay.addLayout(row)
+            target.addLayout(row)
             return cb
 
         def _sub_slider(label: str, mn: int, mx: int, init: int,
@@ -296,13 +299,13 @@ class ProcessingControlPanel(QWidget):
             rl.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
             lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(56)
+            lbl.setFixedWidth(44)
             sl = QSlider(Qt.Horizontal)
             sl.setRange(mn, mx)
             sl.setValue(init)
             val_lbl = QLabel(fmt.format(v=init))
             val_lbl.setFont(QFont("Helvetica", 8))
-            val_lbl.setFixedWidth(30)
+            val_lbl.setFixedWidth(28)
             sl.valueChanged.connect(
                 lambda v, vl=val_lbl, f=fmt: vl.setText(f.format(v=v)))
             rl.addWidget(lbl)
@@ -310,6 +313,7 @@ class ProcessingControlPanel(QWidget):
             rl.addWidget(val_lbl)
             return w, sl, val_lbl
 
+        # ── Line corrections (full-width in both modes) ───────────────────────
         line_lbl = QLabel("Line corrections")
         line_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
         line_lbl.setAlignment(Qt.AlignCenter)
@@ -329,49 +333,45 @@ class ProcessingControlPanel(QWidget):
             lay.addStretch()
             return
 
-        bg_lbl = QLabel("Background subtraction")
-        bg_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
-        bg_lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(bg_lbl)
+        # ── Two-column area: Filters (left) | Background (right) ─────────────
+        two_col = QWidget()
+        hbox = QHBoxLayout(two_col)
+        hbox.setContentsMargins(0, 2, 0, 0)
+        hbox.setSpacing(6)
 
-        self._bg_combo = _combo_row(
-            "Background:",
-            ["None", "Plane", "Quadratic", "Cubic", "Quartic"],
-        )
-        self._bg_step_cb = QCheckBox("Step-tolerant surface mask")
-        self._bg_step_cb.setFont(QFont("Helvetica", 8))
-        self._bg_step_cb.setToolTip(
-            "Ignores steep pixels during polynomial surface fitting. "
-            "This is not the STM line-background algorithm."
-        )
-        lay.addWidget(self._bg_step_cb)
+        L = QVBoxLayout()
+        L.setContentsMargins(0, 0, 0, 0)
+        L.setSpacing(3)
 
-        self._stm_line_bg_combo = _combo_row(
-            "STM line background:",
-            ["None", "Step tolerant"],
-        )
+        R = QVBoxLayout()
+        R.setContentsMargins(0, 0, 0, 0)
+        R.setSpacing(3)
 
-        self._facet_cb = QCheckBox("Facet level (flat-terrace ref)")
-        self._facet_cb.setFont(QFont("Helvetica", 8))
-        lay.addWidget(self._facet_cb)
+        hbox.addLayout(L, 1)
+        hbox.addLayout(R, 1)
+        lay.addWidget(two_col)
 
-        smooth_lbl = QLabel("Generic filters")
-        smooth_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
-        smooth_lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(smooth_lbl)
+        def _col_lbl(text: str, target):
+            lbl = QLabel(text)
+            lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+            lbl.setAlignment(Qt.AlignCenter)
+            target.addWidget(lbl)
 
-        self._smooth_combo = _combo_row("Smooth:", ["None", "Gaussian"])
+        # Left: Filters
+        _col_lbl("Filters", L)
+
+        self._smooth_combo = _combo_row("Smooth:", ["None", "Gaussian"], L, 54)
         self._smooth_sigma_w, self._smooth_sigma_sl, _ = _sub_slider(
-            "sigma (px):", 1, 20, 1, "{v}")
-        lay.addWidget(self._smooth_sigma_w)
+            "sigma:", 1, 20, 1, "{v}px")
+        L.addWidget(self._smooth_sigma_w)
         self._smooth_sigma_w.setVisible(False)
         self._smooth_combo.currentIndexChanged.connect(
             lambda i: self._smooth_sigma_w.setVisible(i != 0))
 
-        self._highpass_combo = _combo_row("High-pass:", ["None", "Gaussian"])
+        self._highpass_combo = _combo_row("Hi-pass:", ["None", "Gaussian"], L, 54)
         self._highpass_sigma_w, self._highpass_sigma_sl, _ = _sub_slider(
-            "sigma (px):", 1, 80, 8, "{v}")
-        lay.addWidget(self._highpass_sigma_w)
+            "sigma:", 1, 80, 8, "{v}px")
+        L.addWidget(self._highpass_sigma_w)
         self._highpass_sigma_w.setVisible(False)
         self._highpass_combo.setToolTip(
             "ImageJ-like high-pass: subtracts a broad Gaussian-blurred background."
@@ -379,38 +379,66 @@ class ProcessingControlPanel(QWidget):
         self._highpass_combo.currentIndexChanged.connect(
             lambda i: self._highpass_sigma_w.setVisible(i != 0))
 
-        self._edge_combo = _combo_row("Edge detect:", ["None", "Laplacian", "LoG", "DoG"])
+        self._edge_combo = _combo_row("Edge:", ["None", "Laplacian", "LoG", "DoG"], L, 54)
         self._edge_sigma_w, self._edge_sigma_sl, _ = _sub_slider(
-            "sigma (px):", 1, 20, 1, "{v}")
-        lay.addWidget(self._edge_sigma_w)
+            "sigma:", 1, 20, 1, "{v}px")
+        L.addWidget(self._edge_sigma_w)
         self._edge_sigma_w.setVisible(False)
         self._edge_combo.currentIndexChanged.connect(
             lambda i: self._edge_sigma_w.setVisible(i != 0))
 
-        fft_lbl = QLabel("Radial FFT filter")
-        fft_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
-        fft_lbl.setToolTip(
+        _col_lbl("Radial FFT", L)
+
+        self._fft_combo = _combo_row("Mode:", ["None", "Low-pass", "High-pass"], L, 54)
+        self._fft_combo.setToolTip(
             "Simple global radial low/high-pass filter. "
             "This is not the ImageJ Periodic Filter workflow."
         )
-        fft_lbl.setAlignment(Qt.AlignCenter)
-        lay.addWidget(fft_lbl)
-
-        self._fft_combo = _combo_row("Radial FFT:", ["None", "Low-pass", "High-pass"])
-        self._fft_combo.setToolTip(
-            "Applies a circular frequency cutoff to the whole image. "
-            "Use this as a coarse global filter, not as spot/period selection."
-        )
         self._fft_cutoff_widget, self._fft_sl, _ = _sub_slider(
-            "Cutoff:", 1, 50, 10, "{v}%")
-        lay.addWidget(self._fft_cutoff_widget)
+            "cutoff:", 1, 50, 10, "{v}%")
+        L.addWidget(self._fft_cutoff_widget)
         self._fft_cutoff_widget.setVisible(False)
         self._fft_combo.currentIndexChanged.connect(
             lambda i: self._fft_cutoff_widget.setVisible(i != 0))
 
-        self._fft_soft_cb = QCheckBox("Soft border (Tukey taper)")
+        self._fft_soft_cb = QCheckBox("Soft border")
         self._fft_soft_cb.setFont(QFont("Helvetica", 8))
-        lay.addWidget(self._fft_soft_cb)
+        self._fft_soft_cb.setToolTip(
+            "Cosine-taper the image edges before FFT to suppress ringing artefacts "
+            "(ImageJ FFT_Soft_Border approach)."
+        )
+        L.addWidget(self._fft_soft_cb)
+        L.addStretch()
+
+        # Right: Background
+        _col_lbl("Background", R)
+
+        self._bg_combo = _combo_row(
+            "Order:",
+            ["None", "Plane", "Quad.", "Cubic", "Quart."],
+            R, 46,
+        )
+        self._bg_step_cb = QCheckBox("Step-tolerant")
+        self._bg_step_cb.setFont(QFont("Helvetica", 8))
+        self._bg_step_cb.setToolTip(
+            "Ignores steep pixels during polynomial surface fitting. "
+            "This is not the STM line-background algorithm."
+        )
+        R.addWidget(self._bg_step_cb)
+
+        self._stm_line_bg_combo = _combo_row(
+            "STM line:",
+            ["None", "Step-tol."],
+            R, 54,
+        )
+
+        self._facet_cb = QCheckBox("Facet level")
+        self._facet_cb.setFont(QFont("Helvetica", 8))
+        self._facet_cb.setToolTip(
+            "Level each atomically flat terrace to a common height reference."
+        )
+        R.addWidget(self._facet_cb)
+        R.addStretch()
 
     def state(self) -> dict:
         align_map = {0: None, 1: "median", 2: "mean"}
@@ -807,7 +835,7 @@ class ImageViewerDialog(QDialog):
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right_scroll.setFixedWidth(280)
+        right_scroll.setFixedWidth(300)
 
         right = QWidget()
         right_lay = QVBoxLayout(right)
@@ -898,97 +926,146 @@ class ImageViewerDialog(QDialog):
 
         right_lay.addWidget(_sep())
 
-        standard_lbl = QLabel("Standard processing")
-        standard_lbl.setFont(QFont("Helvetica", 9, QFont.Bold))
-        right_lay.addWidget(standard_lbl)
-
         self._processing_panel = ProcessingControlPanel("viewer_full")
         right_lay.addWidget(self._processing_panel)
 
-        self._set_zero_plane_btn = QPushButton("Set zero plane (3 clicks)")
+        right_lay.addWidget(_sep())
+
+        # ── Zero reference | Selection use (compact 2-column row) ─────────────
+        zs_row = QHBoxLayout()
+        zs_row.setSpacing(6)
+        zs_row.setContentsMargins(0, 0, 0, 0)
+
+        zero_col = QVBoxLayout()
+        zero_col.setSpacing(3)
+        zero_col.setContentsMargins(0, 0, 0, 0)
+        _zero_hdr = QLabel("Zero ref.")
+        _zero_hdr.setFont(QFont("Helvetica", 7, QFont.Bold))
+        _zero_hdr.setAlignment(Qt.AlignCenter)
+        zero_col.addWidget(_zero_hdr)
+        self._set_zero_plane_btn = QPushButton("Set zero plane")
         self._set_zero_plane_btn.setCheckable(True)
         self._set_zero_plane_btn.setFont(QFont("Helvetica", 8))
         self._set_zero_plane_btn.setFixedHeight(24)
+        self._set_zero_plane_btn.setToolTip("Click 3 points on the image to define a zero-height plane.")
         self._set_zero_plane_btn.toggled.connect(self._on_set_zero_plane_mode_toggled)
-        right_lay.addWidget(self._set_zero_plane_btn)
-
-        self._set_zero_clear_btn = QPushButton("Clear zero references")
+        zero_col.addWidget(self._set_zero_plane_btn)
+        self._set_zero_clear_btn = QPushButton("Clear")
         self._set_zero_clear_btn.setFont(QFont("Helvetica", 8))
         self._set_zero_clear_btn.setFixedHeight(22)
+        self._set_zero_clear_btn.setToolTip("Clear all zero-plane reference points.")
         self._set_zero_clear_btn.clicked.connect(self._on_clear_set_zero)
-        right_lay.addWidget(self._set_zero_clear_btn)
+        zero_col.addWidget(self._set_zero_clear_btn)
+        zero_col.addStretch()
 
-        selection_use_lbl = QLabel("Selection use")
-        selection_use_lbl.setFont(QFont("Helvetica", 8, QFont.Bold))
-        right_lay.addWidget(selection_use_lbl)
-
+        sel_col = QVBoxLayout()
+        sel_col.setSpacing(3)
+        sel_col.setContentsMargins(0, 0, 0, 0)
+        _sel_hdr = QLabel("Selection use")
+        _sel_hdr.setFont(QFont("Helvetica", 7, QFont.Bold))
+        _sel_hdr.setAlignment(Qt.AlignCenter)
+        sel_col.addWidget(_sel_hdr)
         self._scope_cb = QComboBox()
-        self._scope_cb.addItems(["Whole image", "Selected region only"])
+        self._scope_cb.addItems(["Whole image", "ROI filters only"])
         self._scope_cb.setFont(QFont("Helvetica", 8))
         self._scope_cb.setToolTip(
-            "Selected-region processing applies local filters only; backgrounds and scan-line tools remain whole-image operations."
-        )
-        right_lay.addWidget(self._scope_cb)
-
-        self._bg_fit_roi_cb = QCheckBox("Fit surface background from selection")
+            "ROI filters only: smooth/high-pass/edge/FFT apply inside the "
+            "drawn selection; background and scan-line corrections remain whole-image.")
+        sel_col.addWidget(self._scope_cb)
+        self._bg_fit_roi_cb = QCheckBox("Fit bg from sel.")
         self._bg_fit_roi_cb.setFont(QFont("Helvetica", 8))
         self._bg_fit_roi_cb.setToolTip(
             "Fits Plane/Quadratic/Cubic/Quartic background using selected area pixels, "
             "then subtracts that fitted surface from the whole image."
         )
-        right_lay.addWidget(self._bg_fit_roi_cb)
-
-        self._patch_roi_cb = QCheckBox("Patch-interpolate selection")
+        sel_col.addWidget(self._bg_fit_roi_cb)
+        self._patch_roi_cb = QCheckBox("Patch selection")
         self._patch_roi_cb.setFont(QFont("Helvetica", 8))
         self._patch_roi_cb.setToolTip(
             "Fills the selected area by patch interpolation. "
             "Line selections cannot be patch-interpolated."
         )
-        right_lay.addWidget(self._patch_roi_cb)
-
-        patch_method_row = QHBoxLayout()
-        patch_method_lbl = QLabel("  Method:")
-        patch_method_lbl.setFont(QFont("Helvetica", 8))
-        patch_method_lbl.setFixedWidth(56)
+        sel_col.addWidget(self._patch_roi_cb)
+        _pm_row = QHBoxLayout()
+        _pm_lbl = QLabel("Method:")
+        _pm_lbl.setFont(QFont("Helvetica", 8))
+        _pm_lbl.setFixedWidth(46)
         self._patch_method_combo = QComboBox()
-        self._patch_method_combo.addItems(["Line-fit (slope)", "Laplace (smooth)"])
+        self._patch_method_combo.addItems(["Line-fit", "Laplace"])
         self._patch_method_combo.setFont(QFont("Helvetica", 8))
         self._patch_method_combo.setToolTip(
-            "Line-fit: extrapolates scan-line slope from rim pixels — recommended for STM terraces.\n"
+            "Line-fit: extrapolates scan-line slope from rim pixels — "
+            "recommended for STM terraces.\n"
             "Laplace: isotropic harmonic fill — smooth but does not preserve surface tilt."
         )
-        patch_method_row.addWidget(patch_method_lbl)
-        patch_method_row.addWidget(self._patch_method_combo, 1)
-        right_lay.addLayout(patch_method_row)
+        _pm_row.addWidget(_pm_lbl)
+        _pm_row.addWidget(self._patch_method_combo, 1)
+        sel_col.addLayout(_pm_row)
+        sel_col.addStretch()
+
+        zs_row.addLayout(zero_col, 1)
+        zs_row.addLayout(sel_col, 1)
+        right_lay.addLayout(zs_row)
 
         self._roi_status_lbl = QLabel("Selection: none")
         self._roi_status_lbl.setFont(QFont("Helvetica", 8))
         self._roi_status_lbl.setWordWrap(True)
         right_lay.addWidget(self._roi_status_lbl)
 
+        right_lay.addWidget(_sep())
+
+        # ── Apply / Reset — always visible ────────────────────────────────────
+        ar_row = QHBoxLayout()
+        ar_row.setSpacing(4)
         proc_apply_btn = QPushButton("Apply processing")
-        proc_apply_btn.setFont(QFont("Helvetica", 8))
-        proc_apply_btn.setFixedHeight(24)
+        proc_apply_btn.setFont(QFont("Helvetica", 8, QFont.Bold))
+        proc_apply_btn.setFixedHeight(28)
         proc_apply_btn.setObjectName("accentBtn")
         proc_apply_btn.clicked.connect(self._on_apply_processing)
-        right_lay.addWidget(proc_apply_btn)
-
-        proc_reset_btn = QPushButton("Reset to original")
+        proc_reset_btn = QPushButton("Reset")
         proc_reset_btn.setFont(QFont("Helvetica", 8))
-        proc_reset_btn.setFixedHeight(24)
+        proc_reset_btn.setFixedHeight(28)
         proc_reset_btn.setToolTip(
             "Discard all processing (background, FFT, smoothing, set-zero, …) "
             "and reload the raw on-disk data for the current image.")
         proc_reset_btn.clicked.connect(self._on_reset_processing)
-        right_lay.addWidget(proc_reset_btn)
+        ar_row.addWidget(proc_apply_btn, 2)
+        ar_row.addWidget(proc_reset_btn, 1)
+        right_lay.addLayout(ar_row)
 
         right_lay.addWidget(_sep())
 
-        self._advanced_toggle, self._advanced_widget, advanced_lay = (
-            _collapsible_section("Advanced tools", expanded=False)
-        )
+        # ── Save PNG — always visible ─────────────────────────────────────────
+        save_btn = QPushButton("⬇  Save PNG copy…")
+        save_btn.setFont(QFont("Helvetica", 8, QFont.Bold))
+        save_btn.setFixedHeight(26)
+        save_btn.setObjectName("accentBtn")
+        save_btn.clicked.connect(self._on_save_png)
+        right_lay.addWidget(save_btn)
 
-        periodic_btn = QPushButton("Periodic FFT filter...")
+        # ── Send to tool (collapsible) ────────────────────────────────────────
+        _, self._export_widget, send_lay = _collapsible_section("→ Send to tool", expanded=False)
+
+        send_feat_btn = QPushButton("→ Feature Counting")
+        send_feat_btn.setFont(QFont("Helvetica", 8))
+        send_feat_btn.setFixedHeight(24)
+        send_feat_btn.setToolTip(
+            "Send the current processed image to the Feature Counting tab and close viewer")
+        send_feat_btn.clicked.connect(self._on_send_to_features)
+        send_lay.addWidget(send_feat_btn)
+
+        send_tv_btn = QPushButton("→ TV Denoising")
+        send_tv_btn.setFont(QFont("Helvetica", 8))
+        send_tv_btn.setFixedHeight(24)
+        send_tv_btn.setToolTip(
+            "Send the current processed image to the TV Denoising tab and close viewer")
+        send_tv_btn.clicked.connect(self._on_send_to_tv)
+        send_lay.addWidget(send_tv_btn)
+
+        # ── Advanced tools (collapsible) ──────────────────────────────────────
+        _, self._advanced_widget, advanced_lay = _collapsible_section("Advanced tools", expanded=False)
+
+        periodic_btn = QPushButton("Periodic FFT filter…")
         periodic_btn.setFont(QFont("Helvetica", 8))
         periodic_btn.setFixedHeight(24)
         periodic_btn.clicked.connect(self._on_periodic_filter)
@@ -1006,12 +1083,8 @@ class ImageViewerDialog(QDialog):
             "Scale y:", 0.80, 1.20, 1.0, 0.005, 3)
         advanced_lay.addWidget(self._undistort_scale_w)
 
-        right_lay.addWidget(_sep())
-
-        # Spec marker selection should eventually move to the Browse mapping workflow.
-        self._spec_overlay_toggle, self._spec_overlay_widget, spec_lay = (
-            _collapsible_section("Spectroscopy overlay", expanded=False)
-        )
+        # ── Spectroscopy overlay (collapsible) ────────────────────────────────
+        _, self._spec_overlay_widget, spec_lay = _collapsible_section("Spectroscopy overlay", expanded=False)
 
         self._spec_show_cb = QCheckBox("Show spec positions")
         self._spec_show_cb.setFont(QFont("Helvetica", 8))
@@ -1037,35 +1110,6 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.context_menu_requested.connect(self._on_image_context_menu)
         self._line_profile_panel.export_csv_clicked.connect(self._on_export_line_profile_csv)
 
-        right_lay.addWidget(_sep())
-
-        # save PNG copy + send to other tools
-        self._export_toggle, self._export_widget, export_lay = (
-            _collapsible_section("Export / Send", expanded=False)
-        )
-        save_btn = QPushButton("⬇ Save PNG copy…")
-        save_btn.setFont(QFont("Helvetica", 8, QFont.Bold))
-        save_btn.setFixedHeight(26)
-        save_btn.setObjectName("accentBtn")
-        save_btn.clicked.connect(self._on_save_png)
-        export_lay.addWidget(save_btn)
-
-        send_feat_btn = QPushButton("→ Feature Counting")
-        send_feat_btn.setFont(QFont("Helvetica", 8))
-        send_feat_btn.setFixedHeight(24)
-        send_feat_btn.setToolTip(
-            "Send the current processed image to the Feature Counting tab and close viewer")
-        send_feat_btn.clicked.connect(self._on_send_to_features)
-        export_lay.addWidget(send_feat_btn)
-
-        send_tv_btn = QPushButton("→ TV Denoising")
-        send_tv_btn.setFont(QFont("Helvetica", 8))
-        send_tv_btn.setFixedHeight(24)
-        send_tv_btn.setToolTip(
-            "Send the current processed image to the TV Denoising tab and close viewer")
-        send_tv_btn.clicked.connect(self._on_send_to_tv)
-        export_lay.addWidget(send_tv_btn)
-
         self._status_lbl = QLabel("")
         self._status_lbl.setFont(QFont("Helvetica", 8))
         self._status_lbl.setWordWrap(True)
@@ -1075,7 +1119,7 @@ class ImageViewerDialog(QDialog):
 
         right_scroll.setWidget(right)
         splitter.addWidget(right_scroll)
-        splitter.setSizes([900, 280])
+        splitter.setSizes([900, 300])
         root.addWidget(splitter, 1)
 
         # navigation row
