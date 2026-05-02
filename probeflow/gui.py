@@ -271,10 +271,32 @@ class ProcessingControlPanel(QWidget):
         self._mode = mode
         self._build()
 
+    _TWO_COL_THRESHOLD = 260  # px — switch to 1-col below this panel width
+
+    def resizeEvent(self, event: "QResizeEvent"):
+        super().resizeEvent(event)
+        if not hasattr(self, "_two_col"):
+            return
+        use_two_col = event.size().width() >= self._TWO_COL_THRESHOLD
+        if use_two_col == self._using_two_col:
+            return
+        self._using_two_col = use_two_col
+        hbox = self._two_col.layout()
+        if use_two_col:
+            # Move bg_section back into the right half of two_col
+            hbox.addWidget(self._bg_section, 1)
+        else:
+            # Pull bg_section out of two_col, place it below in the main column
+            hbox.removeWidget(self._bg_section)
+            idx = self._lay.indexOf(self._two_col)
+            self._lay.insertWidget(idx + 1, self._bg_section)
+        self._bg_section.show()
+
     def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 2, 0, 2)
-        lay.setSpacing(4)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(4, 2, 0, 2)
+        self._lay.setSpacing(4)
+        lay = self._lay  # local alias for closures
 
         def _combo_row(label: str, items: list[str],
                        target=None, lbl_width: int = 90) -> QComboBox:
@@ -283,10 +305,16 @@ class ProcessingControlPanel(QWidget):
             row = QHBoxLayout()
             lbl = QLabel(label)
             lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(lbl_width)
+            if lbl_width >= 90:
+                lbl.setFixedWidth(lbl_width)
+            else:
+                lbl.setMaximumWidth(lbl_width)
+                lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             cb = QComboBox()
             cb.addItems(items)
             cb.setFont(QFont("Helvetica", 8))
+            cb.setMinimumWidth(0)
+            cb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             row.addWidget(lbl)
             row.addWidget(cb, 1)
             target.addLayout(row)
@@ -299,7 +327,7 @@ class ProcessingControlPanel(QWidget):
             rl.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
             lbl.setFont(QFont("Helvetica", 8))
-            lbl.setFixedWidth(44)
+            lbl.setMaximumWidth(44)
             sl = QSlider(Qt.Horizontal)
             sl.setRange(mn, mx)
             sl.setValue(init)
@@ -312,6 +340,12 @@ class ProcessingControlPanel(QWidget):
             rl.addWidget(sl, 1)
             rl.addWidget(val_lbl)
             return w, sl, val_lbl
+
+        def _col_lbl(text: str, target):
+            lbl = QLabel(text)
+            lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+            lbl.setAlignment(Qt.AlignCenter)
+            target.addWidget(lbl)
 
         # ── Line corrections (full-width in both modes) ───────────────────────
         line_lbl = QLabel("Line corrections")
@@ -333,31 +367,12 @@ class ProcessingControlPanel(QWidget):
             lay.addStretch()
             return
 
-        # ── Two-column area: Filters (left) | Background (right) ─────────────
-        two_col = QWidget()
-        hbox = QHBoxLayout(two_col)
-        hbox.setContentsMargins(0, 2, 0, 0)
-        hbox.setSpacing(6)
-
-        L = QVBoxLayout()
+        # ── Filter section (left column / full-width in 1-col) ────────────────
+        self._filter_section = QWidget()
+        L = QVBoxLayout(self._filter_section)
         L.setContentsMargins(0, 0, 0, 0)
         L.setSpacing(3)
 
-        R = QVBoxLayout()
-        R.setContentsMargins(0, 0, 0, 0)
-        R.setSpacing(3)
-
-        hbox.addLayout(L, 1)
-        hbox.addLayout(R, 1)
-        lay.addWidget(two_col)
-
-        def _col_lbl(text: str, target):
-            lbl = QLabel(text)
-            lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
-            lbl.setAlignment(Qt.AlignCenter)
-            target.addWidget(lbl)
-
-        # Left: Filters
         _col_lbl("Filters", L)
 
         self._smooth_combo = _combo_row("Smooth:", ["None", "Gaussian"], L, 54)
@@ -410,7 +425,12 @@ class ProcessingControlPanel(QWidget):
         L.addWidget(self._fft_soft_cb)
         L.addStretch()
 
-        # Right: Background
+        # ── Background section (right column / below filters in 1-col) ────────
+        self._bg_section = QWidget()
+        R = QVBoxLayout(self._bg_section)
+        R.setContentsMargins(0, 0, 0, 0)
+        R.setSpacing(3)
+
         _col_lbl("Background", R)
 
         self._bg_combo = _combo_row(
@@ -439,6 +459,16 @@ class ProcessingControlPanel(QWidget):
         )
         R.addWidget(self._facet_cb)
         R.addStretch()
+
+        # ── Two-column container (2-col mode: filter | bg side by side) ───────
+        self._two_col = QWidget()
+        hbox = QHBoxLayout(self._two_col)
+        hbox.setContentsMargins(0, 2, 0, 0)
+        hbox.setSpacing(4)
+        hbox.addWidget(self._filter_section, 1)
+        hbox.addWidget(self._bg_section, 1)
+        lay.addWidget(self._two_col)
+        self._using_two_col = True
 
     def state(self) -> dict:
         align_map = {0: None, 1: "median", 2: "mean"}
@@ -835,7 +865,8 @@ class ImageViewerDialog(QDialog):
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        right_scroll.setFixedWidth(300)
+        right_scroll.setMinimumWidth(240)
+        right_scroll.setMaximumWidth(480)
 
         right = QWidget()
         right_lay = QVBoxLayout(right)
@@ -883,16 +914,15 @@ class ImageViewerDialog(QDialog):
             return w, spin
 
         # histogram
-        hist_lbl = QLabel("Histogram — drag the red/green lines to clip")
+        hist_lbl = QLabel("Histogram / contrast")
         hist_lbl.setFont(QFont("Helvetica", 9, QFont.Bold))
-        hist_lbl.setWordWrap(True)
         right_lay.addWidget(hist_lbl)
 
-        self._fig  = Figure(figsize=(2.8, 2.4), dpi=80)
+        self._fig  = Figure(figsize=(3.0, 1.6), dpi=80)
         self._fig.patch.set_alpha(0)
         self._ax   = self._fig.add_subplot(111)
         self._canvas = FigureCanvasQTAgg(self._fig)
-        self._canvas.setFixedHeight(220)
+        self._canvas.setFixedHeight(160)
         self._canvas.setContextMenuPolicy(Qt.CustomContextMenu)
         self._canvas.customContextMenuRequested.connect(self._on_hist_context_menu)
         right_lay.addWidget(self._canvas)
@@ -1119,7 +1149,10 @@ class ImageViewerDialog(QDialog):
 
         right_scroll.setWidget(right)
         splitter.addWidget(right_scroll)
-        splitter.setSizes([900, 300])
+        splitter.setSizes([880, 300])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setCollapsible(1, False)
         root.addWidget(splitter, 1)
 
         # navigation row
@@ -1360,13 +1393,13 @@ class ImageViewerDialog(QDialog):
         self._high_line = self._ax.axvline(hi_phys, color="#a6e3a1",
                                             linewidth=1.6, picker=6)
 
-        self._ax.tick_params(colors=fg, labelsize=7)
+        self._ax.tick_params(axis="x", colors=fg, labelsize=7)
+        self._ax.tick_params(axis="y", left=False, labelleft=False)
+        self._ax.yaxis.set_visible(False)
         for spine in self._ax.spines.values():
             spine.set_edgecolor(self._t.get("sep", "#45475a"))
-        self._ax.set_xlabel(f"{axis_label} [{unit}]", fontsize=8, color=fg)
-        self._ax.set_ylabel("Count", fontsize=8, color=fg)
-
-        self._fig.tight_layout(pad=0.4)
+        self._ax.set_xlabel(f"{axis_label} [{unit}]", fontsize=7, color=fg)
+        self._fig.subplots_adjust(left=0.02, right=0.98, top=0.97, bottom=0.22)
         self._canvas.draw_idle()
 
         self._clip_val_lbl.setText(
