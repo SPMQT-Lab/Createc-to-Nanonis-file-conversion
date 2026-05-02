@@ -1008,6 +1008,110 @@ def _cmd_unit_cell(args) -> int:
     return 0
 
 
+def _cmd_diag_z(args) -> int:
+    """Diagnose Z-scale interpretation for a Createc .dat file."""
+    from probeflow.readers.createc_dat import read_createc_dat_report
+    from probeflow.common import _f, find_hdr, get_dac_bits, v_per_dac, z_scale_m_per_dac
+
+    path = args.input
+    try:
+        report = read_createc_dat_report(path, include_raw=True)
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    hdr = report.header
+    bits = get_dac_bits(hdr)
+
+    # 1. Header values
+    print(f"File: {path.name}")
+    print()
+    print("Header values:")
+    for key in ["Dacto[A]z", "GainZ", "ZPiezoconst", "DAC-Type",
+                "Channels", "Channelselectval", "Length x[A]", "Length y[A]"]:
+        val = find_hdr(hdr, key, None)
+        print(f"  {key:<20} = {val if val is not None else 'MISSING'}")
+
+    # 2. Dacto[A]z parsing
+    raw_dacto_str = find_hdr(hdr, "Dacto[A]z", None)
+    parsed_dacto = _f(raw_dacto_str)
+    print()
+    print("Dacto[A]z parsing:")
+    print(f"  find_hdr result = {raw_dacto_str!r}")
+    print(f"  _f(...)         = {parsed_dacto!r}")
+
+    # 3. v_per_dac conventions
+    vpd_half = 10.0 / (2 ** bits)
+    vpd_full = 20.0 / (2 ** bits)
+    print()
+    print(f"v_per_dac (bits={bits}):")
+    print(f"  vpd_half  code convention  (10/2^bits) = {vpd_half:.6e} V/DAC")
+    print(f"  vpd_full  bipolar ±V_ref   (20/2^bits) = {vpd_full:.6e} V/DAC")
+
+    # Parse scalars needed for candidates
+    gainz = _f(find_hdr(hdr, "GainZ", None))
+    zpiezo = _f(find_hdr(hdr, "ZPiezoconst", None))
+
+    # 4. Five candidate Z scales in Å/DAC.
+    # Dacto[A]z label is Ångstrom → candidates use it as-is in Å/DAC.
+    # ZPiezoconst treated here as Å/V (its header label unit) for the zp candidates.
+    candidates = [
+        ("cand_dacto",          parsed_dacto),
+        ("cand_dacto_div_gain", (parsed_dacto / gainz)
+                                if (parsed_dacto is not None and gainz) else None),
+        ("cand_dacto_mul_gain", (parsed_dacto * gainz)
+                                if (parsed_dacto is not None and gainz is not None) else None),
+        ("cand_zp_vpdhalf",     (zpiezo * vpd_half) if zpiezo is not None else None),
+        ("cand_zp_vpdfull",     (zpiezo * vpd_full) if zpiezo is not None else None),
+    ]
+
+    # 5. What the code actually returns, converted to Å/DAC for comparison.
+    code_scale_m = z_scale_m_per_dac(hdr, v_per_dac(bits))
+    code_scale_a = code_scale_m * 1e10  # m/DAC → Å/DAC
+
+    if parsed_dacto is not None:
+        code_branch = "Dacto[A]z branch  (dz * 1e-9 m/DAC, treating dz as nm/DAC)"
+    else:
+        code_branch = "fallback branch   (2 * ZPiezoconst * vpd * 1e-9, treating ZPiezoconst as nm/V)"
+
+    # 6. Raw DAC count range from the Z-forward plane.
+    z_fwd_native = 0
+    for info in report.channel_info:
+        if info.semantic == "z" and info.direction == "forward":
+            z_fwd_native = info.native_index
+            break
+
+    raw_z = report.raw_channels_dac[z_fwd_native]
+    raw_min = float(np.nanmin(raw_z))
+    raw_max = float(np.nanmax(raw_z))
+    raw_ptp = raw_max - raw_min
+
+    print()
+    print(f"Z-forward raw DAC counts (channel native_index={z_fwd_native}):")
+    print(f"  min           = {raw_min:+.6e}")
+    print(f"  max           = {raw_max:+.6e}")
+    print(f"  peak-to-peak  = {raw_ptp:.6e}")
+
+    # Candidate table
+    print()
+    print(f"{'Candidate':<25}  {'Scale (Å/DAC)':>14}   Z range")
+    print(f"{'-'*25}  {'-'*14}   -------")
+    for name, scale in candidates:
+        if scale is None:
+            print(f"{name:<25}  {'MISSING':>14}   n/a")
+        else:
+            z_range_a = abs(scale) * raw_ptp
+            print(f"{name:<25}  {scale:>14.4e}   {z_range_a:.2f} Å")
+
+    print()
+    print("Code result (z_scale_m_per_dac):")
+    print(f"  scale       = {code_scale_m:.6e} m/DAC")
+    print(f"              = {code_scale_a:.6e} Å/DAC")
+    print(f"  branch      : {code_branch}")
+    print(f"  Z range     = {code_scale_a * raw_ptp:.2f} Å")
+    return 0
+
+
 def _cmd_dat2sxm(args) -> int:
     from probeflow.io.converters.createc_dat_to_sxm import main as _main
     forwarded = args.rest[1:] if args.rest and args.rest[0] == "--" else args.rest
@@ -1476,6 +1580,12 @@ def _build_parser() -> argparse.ArgumentParser:
     info.add_argument("--json", action="store_true")
     info.add_argument("--verbose", action="store_true")
     info.set_defaults(func=_cmd_info)
+
+    diag_z = sub.add_parser("diag-z",
+        help="Diagnose Z-scale candidates for a Createc .dat file")
+    diag_z.add_argument("input", type=Path,
+        help="Createc .dat file to inspect")
+    diag_z.set_defaults(func=_cmd_diag_z)
 
     gui = sub.add_parser("gui", help="Launch the ProbeFlow graphical interface")
     gui.set_defaults(func=_cmd_gui)
