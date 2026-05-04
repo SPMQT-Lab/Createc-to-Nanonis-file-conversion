@@ -2799,6 +2799,7 @@ class ImageViewerDialog(QDialog):
                 "set_zero_patch",
                 "periodic_notches",
                 "periodic_notch_radius",
+                "geometric_ops",
             )
             if key in self._processing
         }
@@ -2945,6 +2946,23 @@ class ImageViewerDialog(QDialog):
         a_tv.triggered.connect(self._on_send_to_tv)
         menu.addAction(a_tv)
         menu.addSeparator()
+        from PySide6.QtWidgets import QMenu as _QMenu
+        transform_menu = _QMenu("Transform", self)
+        for label, op in [
+            ("Flip Horizontal", "flip_horizontal"),
+            ("Flip Vertical",   "flip_vertical"),
+            ("Rotate 90° CW",   "rotate_90_cw"),
+            ("Rotate 180°",     "rotate_180"),
+            ("Rotate 270° CW",  "rotate_270_cw"),
+        ]:
+            act = transform_menu.addAction(label)
+            act.triggered.connect(
+                (lambda _op=op: lambda: self._on_geometric_op(_op))()
+            )
+        arb_act = transform_menu.addAction("Rotate Arbitrary…")
+        arb_act.triggered.connect(self._on_rotate_arbitrary)
+        menu.addMenu(transform_menu)
+        menu.addSeparator()
         a_png = QAction("⬇ Save PNG copy…", self)
         a_png.triggered.connect(self._on_save_png)
         menu.addAction(a_png)
@@ -2954,6 +2972,26 @@ class ImageViewerDialog(QDialog):
             a_csv.triggered.connect(self._on_export_line_profile_csv)
             menu.addAction(a_csv)
         menu.exec(pos)
+
+    def _on_geometric_op(self, op_name: str) -> None:
+        ops = list(self._processing.get("geometric_ops") or [])
+        ops.append({"op": op_name, "params": {}})
+        self._processing["geometric_ops"] = ops
+        self._refresh_processing_display()
+
+    def _on_rotate_arbitrary(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+        angle, ok = QInputDialog.getDouble(
+            self, "Rotate Arbitrary",
+            "Angle (degrees, positive = counter-clockwise):",
+            0.0, -360.0, 360.0, 1,
+        )
+        if not ok:
+            return
+        ops = list(self._processing.get("geometric_ops") or [])
+        ops.append({"op": "rotate_arbitrary", "params": {"angle_degrees": angle}})
+        self._processing["geometric_ops"] = ops
+        self._refresh_processing_display()
 
     def _on_export_line_profile_csv(self):
         prof = self._line_profile_panel.profile_data()

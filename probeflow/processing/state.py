@@ -41,6 +41,12 @@ _SUPPORTED_OPS: frozenset[str] = frozenset({
     "set_zero_point",
     "set_zero_plane",
     "roi",
+    "flip_horizontal",
+    "flip_vertical",
+    "rotate_90_cw",
+    "rotate_180",
+    "rotate_270_cw",
+    "rotate_arbitrary",
 })
 
 _ROI_ELIGIBLE_OPS: frozenset[str] = frozenset({
@@ -412,6 +418,25 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
             a = a.copy()
             target = a[y0:y1 + 1, x0:x1 + 1]
             target[local_mask] = processed[local_mask]
+        elif step.op in ("flip_horizontal", "flip_vertical",
+                         "rotate_90_cw", "rotate_180", "rotate_270_cw"):
+            fn = getattr(_proc, step.op)
+            a = fn(a)
+        elif step.op == "rotate_arbitrary":
+            roi_steps = [s for s in state.steps if s.op == "roi"]
+            if roi_steps:
+                import warnings
+                warnings.warn(
+                    "rotate_arbitrary invalidates existing ROI geometry. "
+                    "ROI steps in the processing state have been skipped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            a = _proc.rotate_arbitrary(
+                a,
+                angle_degrees=float(p.get("angle_degrees", 0.0)),
+                order=int(p.get("order", 1)),
+            )
         else:
             raise ValueError(
                 f"Unknown processing operation {step.op!r}. "

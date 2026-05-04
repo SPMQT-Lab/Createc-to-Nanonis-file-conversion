@@ -1775,3 +1775,83 @@ def blend_forward_backward(
     if nan_mask.any():
         out[nan_mask] = np.where(np.isfinite(f), f, b)[nan_mask]
     return out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 19.  Geometric transforms — flip and rotation
+#
+# ROI-under-transformation conventions (for Phase 1 reference):
+#
+# - flip_horizontal, flip_vertical, rotate_90_cw, rotate_180, rotate_270_cw:
+#     ROI geometry is transformed to the new pixel-coordinate system. These are
+#     exact, lossless transformations. Phase 1 should update ROI pixel
+#     coordinates when these ops are applied.
+#
+# - rotate_arbitrary:
+#     Existing ROIs are INVALIDATED and must be removed or marked invalid.
+#     Reason: floating-point geometry + bilinear-interpolated pixels make
+#     round-tripping unreliable. The caller (apply_processing_state) warns and
+#     removes any roi steps when rotate_arbitrary is encountered in the state.
+#
+# - crop (future):
+#     ROI geometry is transformed to the new coordinate system. ROIs entirely
+#     outside the crop are dropped; ROIs partially outside are clipped.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def flip_horizontal(arr: np.ndarray) -> np.ndarray:
+    """Flip the scan left-to-right (mirror about the vertical axis)."""
+    return np.fliplr(arr.astype(np.float64, copy=True))
+
+
+def flip_vertical(arr: np.ndarray) -> np.ndarray:
+    """Flip the scan top-to-bottom (mirror about the horizontal axis)."""
+    return np.flipud(arr.astype(np.float64, copy=True))
+
+
+def rotate_90_cw(arr: np.ndarray) -> np.ndarray:
+    """Rotate the scan 90° clockwise. Swaps width and height."""
+    return np.rot90(arr.astype(np.float64, copy=True), k=3)
+
+
+def rotate_180(arr: np.ndarray) -> np.ndarray:
+    """Rotate the scan 180°. Preserves width and height."""
+    return np.rot90(arr.astype(np.float64, copy=True), k=2)
+
+
+def rotate_270_cw(arr: np.ndarray) -> np.ndarray:
+    """Rotate the scan 270° clockwise (= 90° counter-clockwise). Swaps width and height."""
+    return np.rot90(arr.astype(np.float64, copy=True), k=1)
+
+
+def rotate_arbitrary(
+    arr: np.ndarray,
+    angle_degrees: float,
+    *,
+    order: int = 1,
+) -> np.ndarray:
+    """Rotate the scan by an arbitrary angle with canvas expansion.
+
+    Positive angles are counter-clockwise (standard mathematical convention).
+    The output canvas is enlarged to contain the entire rotated image; newly
+    introduced pixels are zero. No input pixels are lost.
+
+    Uses bilinear interpolation (``order=1``) by default, which is appropriate
+    for STM topography data: it preserves smooth gradients without the ringing
+    that cubic introduces near step edges.
+
+    Parameters
+    ----------
+    arr
+        2-D scan plane.
+    angle_degrees
+        Rotation angle in degrees. Positive = counter-clockwise.
+    order
+        Interpolation order: 0=nearest, 1=bilinear (default), 2=quadratic,
+        3=bicubic. Order 1 is recommended for STM topography.
+    """
+    if not isinstance(order, int) or order < 0 or order > 3:
+        raise ValueError(f"order must be 0–3, got {order!r}")
+    from scipy.ndimage import rotate as _ndimage_rotate
+    a = arr.astype(np.float64, copy=True)
+    return _ndimage_rotate(a, float(angle_degrees), reshape=True, order=order,
+                           mode='constant', cval=0.0)

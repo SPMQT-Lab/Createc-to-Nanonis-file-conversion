@@ -265,6 +265,33 @@ def _op_fft(mode: str, cutoff: float, window: str) -> _Op:
     ))
 
 
+def _op_flip_horizontal() -> _Op:
+    return _Op.from_step(ProcessingStep("flip_horizontal", {}))
+
+
+def _op_flip_vertical() -> _Op:
+    return _Op.from_step(ProcessingStep("flip_vertical", {}))
+
+
+def _op_rotate_90_cw() -> _Op:
+    return _Op.from_step(ProcessingStep("rotate_90_cw", {}))
+
+
+def _op_rotate_180() -> _Op:
+    return _Op.from_step(ProcessingStep("rotate_180", {}))
+
+
+def _op_rotate_270_cw() -> _Op:
+    return _Op.from_step(ProcessingStep("rotate_270_cw", {}))
+
+
+def _op_rotate_arbitrary(angle_degrees: float, order: int = 1) -> _Op:
+    return _Op.from_step(ProcessingStep(
+        "rotate_arbitrary",
+        {"angle_degrees": angle_degrees, "order": order},
+    ))
+
+
 def _parse_processing_steps(steps_spec: list[str] | tuple[str, ...] | None) -> list[_Op]:
     """Parse CLI ``--steps`` entries into canonical processing operations."""
     if not steps_spec:
@@ -303,6 +330,20 @@ def _parse_processing_steps(steps_spec: list[str] | tuple[str, ...] | None) -> l
             cutoff = float(parts[1]) if len(parts) > 1 else 0.1
             window = parts[2] if len(parts) > 2 else "hanning"
             ops.append(_op_fft(mode, cutoff, window))
+        elif name == "flip-h":
+            ops.append(_op_flip_horizontal())
+        elif name == "flip-v":
+            ops.append(_op_flip_vertical())
+        elif name == "rotate-90":
+            ops.append(_op_rotate_90_cw())
+        elif name == "rotate-180":
+            ops.append(_op_rotate_180())
+        elif name == "rotate-270":
+            ops.append(_op_rotate_270_cw())
+        elif name == "rotate":
+            angle = float(parts[0]) if parts else 0.0
+            order = int(parts[1]) if len(parts) > 1 else 1
+            ops.append(_op_rotate_arbitrary(angle, order))
         else:
             raise ValueError(f"Unknown pipeline step: {name!r}")
     return ops
@@ -1357,6 +1398,41 @@ def _build_parser() -> argparse.ArgumentParser:
                      default="hanning")
     fft.set_defaults(func=lambda a: _cmd_single_op(a,
         _op_fft(a.mode, a.cutoff, a.window)))
+
+    flip_h = sub.add_parser("flip-h",
+        help="Flip scan left-to-right (mirror about vertical axis)")
+    _add_common_io(flip_h, out_suffix="_fliph.sxm")
+    flip_h.set_defaults(func=lambda a: _cmd_single_op(a, _op_flip_horizontal()))
+
+    flip_v = sub.add_parser("flip-v",
+        help="Flip scan top-to-bottom (mirror about horizontal axis)")
+    _add_common_io(flip_v, out_suffix="_flipv.sxm")
+    flip_v.set_defaults(func=lambda a: _cmd_single_op(a, _op_flip_vertical()))
+
+    rot90 = sub.add_parser("rotate-90",
+        help="Rotate scan 90° clockwise")
+    _add_common_io(rot90, out_suffix="_rot90.sxm")
+    rot90.set_defaults(func=lambda a: _cmd_single_op(a, _op_rotate_90_cw()))
+
+    rot180 = sub.add_parser("rotate-180",
+        help="Rotate scan 180°")
+    _add_common_io(rot180, out_suffix="_rot180.sxm")
+    rot180.set_defaults(func=lambda a: _cmd_single_op(a, _op_rotate_180()))
+
+    rot270 = sub.add_parser("rotate-270",
+        help="Rotate scan 270° clockwise (90° counter-clockwise)")
+    _add_common_io(rot270, out_suffix="_rot270.sxm")
+    rot270.set_defaults(func=lambda a: _cmd_single_op(a, _op_rotate_270_cw()))
+
+    rotate = sub.add_parser("rotate",
+        help="Rotate scan by an arbitrary angle (CCW positive, canvas expands)")
+    _add_common_io(rotate, out_suffix="_rotated.sxm")
+    rotate.add_argument("--angle", type=float, default=0.0,
+        help="Rotation angle in degrees (positive = counter-clockwise)")
+    rotate.add_argument("--order", type=int, default=1, choices=(0, 1, 2, 3),
+        help="Interpolation order: 0=nearest, 1=bilinear (default), 2=quad, 3=bicubic")
+    rotate.set_defaults(func=lambda a: _cmd_single_op(a,
+        _op_rotate_arbitrary(a.angle, a.order)))
 
     grains = sub.add_parser("grains",
         help="Detect grains / islands by threshold and print statistics")

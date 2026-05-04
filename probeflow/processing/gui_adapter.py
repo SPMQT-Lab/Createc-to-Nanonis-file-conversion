@@ -40,6 +40,7 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "processing_scope",
     "roi_rect",
     "roi_geometry",
+    "geometric_ops",
 )
 
 
@@ -234,6 +235,25 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             _append_step(ProcessingStep("set_zero_plane", {
                 "points_px": points[:3],
                 "patch": int(gui_state.get("set_zero_patch", 1)),
+            }))
+
+    for op_spec in gui_state.get("geometric_ops") or []:
+        try:
+            if isinstance(op_spec, str):
+                op_name = op_spec
+                op_params: dict = {}
+            else:
+                op_name = str(op_spec["op"])
+                op_params = dict(op_spec.get("params", {}))
+        except (TypeError, KeyError):
+            continue
+        if op_name in ("flip_horizontal", "flip_vertical",
+                       "rotate_90_cw", "rotate_180", "rotate_270_cw"):
+            _append_step(ProcessingStep(op_name, {}))
+        elif op_name == "rotate_arbitrary":
+            _append_step(ProcessingStep("rotate_arbitrary", {
+                "angle_degrees": float(op_params.get("angle_degrees", 0.0)),
+                "order": int(op_params.get("order", 1)),
             }))
 
     return ProcessingState(steps=steps)
