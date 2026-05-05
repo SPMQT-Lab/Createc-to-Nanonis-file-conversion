@@ -11,7 +11,7 @@ from probeflow.core.metadata import _extract_createc_fields, metadata_from_scan,
 from probeflow.core.scan_loader import load_scan
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 _CREATEC_STEP    = TESTDATA / "createc_scan_step_20nm.dat"
 _CREATEC_TERRACE = TESTDATA / "createc_scan_terrace_109nm.dat"
 _CREATEC_OVERVIEW = TESTDATA / "createc_scan_overview_240nm_pos.dat"

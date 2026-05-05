@@ -44,8 +44,7 @@ line-length = 100
 target-version = "py311"
 extend-exclude = [
   "src/file_cushions",
-  "anonymised_testdata",
-  "data",
+  "test_data",
 ]
 
 [tool.ruff.lint]

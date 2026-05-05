@@ -9,7 +9,7 @@ import pytest
 from probeflow.io.file_type import FileType, sniff_file_type
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 
 
 # Expected mapping from each test data file to its FileType.

@@ -21,8 +21,8 @@ from probeflow.core.scan_loader import load_scan
 log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_INPUT_DIR = REPO_ROOT / "data" / "sample_input"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "output_png"
+DEFAULT_INPUT_DIR = REPO_ROOT / "test_data" / "sample_input"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "test_data" / "output_png"
 
 
 def dat_to_hdr_imgs(

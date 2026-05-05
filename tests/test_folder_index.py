@@ -10,7 +10,7 @@ import pytest
 from probeflow.core.indexing import ProbeFlowItem, index_folder
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 _CREATEC_STEP    = TESTDATA / "createc_scan_step_20nm.dat"
 _CREATEC_TERRACE = TESTDATA / "createc_scan_terrace_109nm.dat"
 _CREATEC_QPLUS_10CH = TESTDATA / "createc_scan_qplus_10ch_afm.dat"

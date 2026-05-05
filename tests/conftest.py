@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SAMPLE_DIR = REPO_ROOT / "data" / "sample_input"
+SAMPLE_DIR = REPO_ROOT / "test_data" / "sample_input"
 CUSHION_DIR = REPO_ROOT / "src" / "file_cushions"
 
 

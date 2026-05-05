@@ -12,7 +12,7 @@ from probeflow.io.converters.createc_dat_to_sxm import convert_dat_to_sxm
 from probeflow.core.scan_model import Scan
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 _CREATEC_4CH = TESTDATA / "createc_scan_terrace_109nm.dat"
 _NANONIS_SXM = TESTDATA / "sxm_moire_10nm.sxm"
 
