@@ -904,41 +904,8 @@ def _load_named_roi(input_path: "Path", name_or_id: str, sidecar: "Path | None" 
 
     Returns the ROI object or None (error already logged).
     """
-    import json as _json
-    if sidecar is None:
-        stem_path = input_path.with_suffix("")
-        candidates = [
-            stem_path.with_suffix(".rois.json"),
-            stem_path.with_suffix(".provenance.json"),
-            input_path.parent / f"{input_path.stem}.rois.json",
-            input_path.parent / f"{input_path.stem}.provenance.json",
-        ]
-        sidecar = next((p for p in candidates if p.exists()), candidates[0])
-    if not sidecar.exists():
-        log.error("No ROI/provenance sidecar found for %s (tried %s)", input_path, sidecar)
-        return None
-    try:
-        data = _json.loads(sidecar.read_text(encoding="utf-8"))
-    except Exception as exc:
-        log.error("Could not read sidecar %s: %s", sidecar, exc)
-        return None
-    roi_set_data = data if isinstance(data.get("rois"), list) else data.get("rois")
-    if not roi_set_data:
-        log.error("Sidecar %s contains no ROI data", sidecar)
-        return None
-    from probeflow.core.roi import ROISet
-    try:
-        roi_set = ROISet.from_dict(roi_set_data)
-    except Exception as exc:
-        log.error("Could not deserialise ROIs from sidecar: %s", exc)
-        return None
-    roi = roi_set.get(name_or_id) or roi_set.get_by_name(name_or_id)
-    if roi is None:
-        log.error("ROI %r not found in sidecar (available: %s)",
-                  name_or_id,
-                  ", ".join(r.name for r in roi_set.rois) or "(none)")
-        return None
-    return roi
+    from probeflow.cli.roi_args import load_named_roi
+    return load_named_roi(input_path, name_or_id, sidecar, logger=log)
 
 
 def _resolve_inline_roi(args, allow_line: bool = False):
@@ -947,57 +914,8 @@ def _resolve_inline_roi(args, allow_line: bool = False):
     Returns (roi_obj | None, error: bool).  If error is True, error is already
     logged and the caller should return 1.
     """
-    from probeflow.core.roi import ROI
-
-    has_rect = getattr(args, "roi_rect", None) is not None
-    has_poly = getattr(args, "roi_polygon", None) is not None
-    has_line = allow_line and getattr(args, "roi_line", None) is not None
-    has_named = getattr(args, "roi", None) is not None
-
-    specified = sum([has_rect, has_poly, has_line, has_named])
-    if specified > 1:
-        log.error("Specify at most one of --roi-rect, --roi-polygon, "
-                  "--roi-line, --roi")
-        return None, True
-    if specified == 0:
-        return None, False
-
-    if has_named:
-        sidecar = getattr(args, "sidecar", None)
-        roi = _load_named_roi(args.input, args.roi, sidecar)
-        if roi is None:
-            return None, True
-        return roi, False
-
-    if has_rect:
-        x0, y0, x1, y1 = args.roi_rect
-        roi = ROI.new("rectangle", {
-            "x": float(min(x0, x1)),
-            "y": float(min(y0, y1)),
-            "width": float(abs(x1 - x0)),
-            "height": float(abs(y1 - y0)),
-        })
-        return roi, False
-
-    if has_poly:
-        coords = list(args.roi_polygon)
-        if len(coords) < 6 or len(coords) % 2 != 0:
-            log.error("--roi-polygon requires an even number of coordinates "
-                      "(at least 6 for 3 vertices)")
-            return None, True
-        vertices = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
-        roi = ROI.new("polygon", {"vertices": vertices})
-        return roi, False
-
-    if has_line:
-        x1_c, y1_c, x2_c, y2_c = args.roi_line
-        roi = ROI.new("line", {
-            "x1": float(x1_c), "y1": float(y1_c),
-            "x2": float(x2_c), "y2": float(y2_c),
-        })
-        return roi, False
-
-    return None, False
+    from probeflow.cli.roi_args import resolve_inline_roi
+    return resolve_inline_roi(args, allow_line=allow_line, logger=log)
 
 
 def _cmd_plane_bg(args) -> int:

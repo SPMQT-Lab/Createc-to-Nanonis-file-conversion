@@ -536,11 +536,13 @@ def test_viewer_arbitrary_transform_removes_rois(qapp):
 
 
 def test_viewer_refresh_display_array_passes_roi_set(qapp, monkeypatch):
-    from probeflow.core.roi import ROISet
+    from probeflow.core.roi import ROI, ROISet
     from probeflow.gui import ImageViewerDialog
     import probeflow.gui._legacy as gui_mod
 
     roi_set = ROISet(image_id="img1")
+    roi = ROI.new("rectangle", {"x": 0.0, "y": 0.0, "width": 2.0, "height": 2.0})
+    roi_set.add(roi)
     seen = {}
 
     def fake_apply(arr, processing, roi_set=None):
@@ -552,14 +554,52 @@ def test_viewer_refresh_display_array_passes_roi_set(qapp, monkeypatch):
     dlg = ImageViewerDialog.__new__(ImageViewerDialog)
     dlg._display_arr = None
     dlg._raw_arr = np.zeros((2, 2))
-    dlg._processing = {"bg_order": 1, "background_fit_roi_id": "roi-id"}
+    dlg._processing = {"bg_order": 1, "background_fit_roi_id": roi.id}
     dlg._image_roi_set = roi_set
     dlg._reset_zoom_on_next_pixmap = False
+    dlg._processing_roi_error = ""
 
     dlg._refresh_display_array()
 
     assert seen["roi_set"] is roi_set
     np.testing.assert_allclose(dlg._display_arr, np.ones((2, 2)))
+
+
+def test_viewer_refresh_display_array_blocks_stale_roi_reference(qapp, monkeypatch):
+    from probeflow.core.roi import ROISet
+    from probeflow.gui import ImageViewerDialog
+    import probeflow.gui._legacy as gui_mod
+
+    class FakeStatus:
+        def __init__(self):
+            self.text = ""
+
+        def setText(self, text):
+            self.text = text
+
+    called = []
+
+    def fake_apply(arr, processing, roi_set=None):
+        called.append(True)
+        return arr + 1.0
+
+    monkeypatch.setattr(gui_mod, "_apply_processing", fake_apply)
+
+    dlg = ImageViewerDialog.__new__(ImageViewerDialog)
+    dlg._display_arr = None
+    dlg._raw_arr = np.zeros((2, 2))
+    dlg._processing = {"bg_order": 1, "background_fit_roi_id": "missing-id"}
+    dlg._image_roi_set = ROISet(image_id="img1")
+    dlg._reset_zoom_on_next_pixmap = False
+    dlg._status_lbl = FakeStatus()
+    dlg._processing_roi_error = ""
+
+    dlg._refresh_display_array()
+
+    assert called == []
+    np.testing.assert_allclose(dlg._display_arr, np.zeros((2, 2)))
+    assert "missing ROI reference" in dlg._processing_roi_error
+    assert "missing-id" in dlg._status_lbl.text
 
 
 def test_viewer_dialog_initializes_panel_from_thumbnail_processing(qapp, monkeypatch):

@@ -645,14 +645,17 @@ class TestApplyGeometricOpToScan:
         from probeflow.processing.state import apply_geometric_op_to_scan
         scan = self._make_scan()
         rs = ROISet(image_id="img1")
-        rs.add(rect_roi())
+        active = rect_roi()
+        rs.add(active)
         rs.add(point_roi())
+        rs.set_active(active.id)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             apply_geometric_op_to_scan(scan, "rotate_arbitrary",
                                        params={"angle_degrees": 30.0},
                                        roi_set=rs)
         assert len(rs.rois) == 0
+        assert rs.active_roi_id is None
         assert any("rotate_arbitrary" in str(warning.message) for warning in w)
 
     def test_no_roi_set_is_fine(self):

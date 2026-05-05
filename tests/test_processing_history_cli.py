@@ -24,6 +24,11 @@ from probeflow.cli import (
 )
 from probeflow.core.roi import ROI, ROISet
 from probeflow.core.scan_model import Scan
+from probeflow.io.roi_sidecar import (
+    default_roi_sidecar_path,
+    load_roi_set_sidecar,
+    save_roi_set_sidecar,
+)
 
 
 # ─── _Op class ───────────────────────────────────────────────────────────────
@@ -37,6 +42,19 @@ class TestOp:
 
 
 class TestCliRoiSidecarLookup:
+    def test_shared_sidecar_helper_round_trips_gui_rois_sidecar(self, tmp_path):
+        scan_path = tmp_path / "scan.sxm"
+        roi = ROI.new("point", {"x": 1.0, "y": 2.0}, name="site")
+        roi_set = ROISet(image_id=str(scan_path))
+        roi_set.add(roi)
+
+        written = save_roi_set_sidecar(roi_set, scan_path)
+        loaded, used = load_roi_set_sidecar(scan_path)
+
+        assert written == default_roi_sidecar_path(scan_path)
+        assert used == written
+        assert loaded.get_by_name("site").id == roi.id
+
     def test_load_named_roi_defaults_to_gui_rois_sidecar(self, tmp_path):
         scan_path = tmp_path / "scan.sxm"
         scan_path.write_bytes(b"")
@@ -48,6 +66,25 @@ class TestCliRoiSidecarLookup:
         import json
         (tmp_path / "scan.rois.json").write_text(
             json.dumps(roi_set.to_dict()),
+            encoding="utf-8",
+        )
+
+        loaded = _load_named_roi(scan_path, "terrace")
+
+        assert loaded is not None
+        assert loaded.id == roi.id
+
+    def test_load_named_roi_falls_back_to_provenance_sidecar(self, tmp_path):
+        scan_path = tmp_path / "scan.sxm"
+        scan_path.write_bytes(b"")
+        roi = ROI.new("rectangle", {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0},
+                      name="terrace")
+        roi_set = ROISet(image_id=str(scan_path))
+        roi_set.add(roi)
+
+        import json
+        (tmp_path / "scan.provenance.json").write_text(
+            json.dumps({"rois": roi_set.to_dict()}),
             encoding="utf-8",
         )
 

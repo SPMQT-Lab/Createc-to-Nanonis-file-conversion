@@ -9,6 +9,8 @@ from probeflow.processing.state import (
     ProcessingState,
     ProcessingStep,
     apply_processing_state,
+    missing_roi_references,
+    roi_references_from_state,
 )
 from probeflow.processing.gui_adapter import processing_state_from_gui
 
@@ -93,6 +95,65 @@ class TestSerialisation:
         ])
         # Should not raise
         json.dumps(state.to_dict())
+
+
+# ── Test B2: ROI reference validation ────────────────────────────────────────
+
+class TestRoiReferenceValidation:
+    def test_collects_plane_bg_and_roi_step_refs(self):
+        state = ProcessingState(steps=[
+            ProcessingStep("plane_bg", {
+                "fit_roi_id": "fit-id",
+                "exclude_roi_expr": {"combine": ["mask-a", "mask-b"]},
+            }),
+            ProcessingStep("roi", {
+                "roi_id": "patch-id",
+                "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
+            }),
+        ])
+
+        refs = roi_references_from_state(state)
+
+        assert [r["value"] for r in refs] == [
+            "fit-id",
+            "mask-a",
+            "mask-b",
+            "patch-id",
+        ]
+
+    def test_missing_refs_accept_ids_or_names(self):
+        from probeflow.core.roi import ROI, ROISet
+
+        roi = ROI.new(
+            "rectangle",
+            {"x": 0.0, "y": 0.0, "width": 2.0, "height": 2.0},
+            name="terrace",
+        )
+        roi_set = ROISet(image_id="img")
+        roi_set.add(roi)
+        state = ProcessingState(steps=[
+            ProcessingStep("plane_bg", {"fit_roi_id": roi.id}),
+            ProcessingStep("plane_bg", {"exclude_roi_id": "terrace"}),
+            ProcessingStep("roi", {
+                "roi_id": "missing",
+                "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
+            }),
+        ])
+
+        missing = missing_roi_references(state, roi_set)
+
+        assert len(missing) == 1
+        assert missing[0]["value"] == "missing"
+
+    def test_missing_refs_without_roi_set_returns_all_refs(self):
+        state = ProcessingState(steps=[
+            ProcessingStep("plane_bg", {"fit_roi_id": "fit-id"}),
+        ])
+
+        missing = missing_roi_references(state, None)
+
+        assert len(missing) == 1
+        assert missing[0]["value"] == "fit-id"
 
 
 # ── Test C: unknown operation raises ─────────────────────────────────────────

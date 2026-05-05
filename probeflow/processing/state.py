@@ -220,6 +220,82 @@ class ProcessingState:
         return cls(steps=steps)
 
 
+# ── ROI reference validation ─────────────────────────────────────────────────
+
+def _roi_refs_from_expr(expr: Any, param_name: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    if not isinstance(expr, dict):
+        return refs
+    if "ref" in expr:
+        refs.append({"param": f"{param_name}.ref", "value": str(expr["ref"])})
+    if "invert" in expr:
+        refs.append({"param": f"{param_name}.invert", "value": str(expr["invert"])})
+    if "combine" in expr:
+        for value in expr.get("combine") or ():
+            refs.append({"param": f"{param_name}.combine", "value": str(value)})
+    return refs
+
+
+def roi_references_from_state(state: "ProcessingState") -> list[dict[str, Any]]:
+    """Return ROI ids/names referenced by a processing state.
+
+    The returned dictionaries are intentionally plain JSON-like values so GUI,
+    CLI, and tests can report stale ROI references without importing Qt or
+    depending on a concrete ROISet implementation.
+    """
+    refs: list[dict[str, Any]] = []
+    for step_index, step in enumerate(state.steps):
+        params = step.params or {}
+        if step.op == "roi" and params.get("roi_id") is not None:
+            refs.append({
+                "step_index": step_index,
+                "op": step.op,
+                "param": "roi_id",
+                "value": str(params["roi_id"]),
+            })
+        if step.op == "plane_bg":
+            for param in ("fit_roi_id", "apply_roi_id", "exclude_roi_id"):
+                if params.get(param) is not None:
+                    refs.append({
+                        "step_index": step_index,
+                        "op": step.op,
+                        "param": param,
+                        "value": str(params[param]),
+                    })
+            for param in ("fit_roi_expr", "apply_roi_expr", "exclude_roi_expr"):
+                for ref in _roi_refs_from_expr(params.get(param), param):
+                    ref.update({"step_index": step_index, "op": step.op})
+                    refs.append(ref)
+    return refs
+
+
+def missing_roi_references(
+    state: "ProcessingState",
+    roi_set: "Any | None",
+) -> list[dict[str, Any]]:
+    """Return ROI references in *state* that are not present in *roi_set*.
+
+    Lookup accepts both UUIDs and names because historical CLI/provenance paths
+    allowed either.  This validator is deliberately non-mutating; callers decide
+    whether a missing reference should warn, block rendering, or abort export.
+    """
+    refs = roi_references_from_state(state)
+    if not refs:
+        return []
+    if roi_set is None:
+        return refs
+
+    missing: list[dict[str, Any]] = []
+    for ref in refs:
+        value = str(ref["value"])
+        found = roi_set.get(value)
+        if found is None and hasattr(roi_set, "get_by_name"):
+            found = roi_set.get_by_name(value)
+        if found is None:
+            missing.append(ref)
+    return missing
+
+
 # ── ROI expression resolver ───────────────────────────────────────────────────
 
 def resolve_roi_expr(
@@ -638,6 +714,8 @@ def apply_geometric_op_to_scan(
             )
         if operation == "rotate_arbitrary" and invalidated:
             roi_set.rois = [r for r in roi_set.rois if r.id not in set(invalidated)]
+            if getattr(roi_set, "active_roi_id", None) in set(invalidated):
+                roi_set.active_roi_id = None
             _warnings.warn(
                 f"rotate_arbitrary invalidated {len(invalidated)} ROI(s). "
                 "They have been removed from the ROISet.",

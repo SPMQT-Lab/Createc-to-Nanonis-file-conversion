@@ -91,6 +91,7 @@ from probeflow.provenance.export import build_scan_export_provenance, png_displa
 from probeflow.processing.gui_adapter import (
     processing_state_from_gui,
 )
+from probeflow.processing.state import missing_roi_references
 from probeflow.gui.features import (
     FeaturesPanel,
     FeaturesSidebar,
@@ -1371,6 +1372,7 @@ class ImageViewerDialog(QDialog):
         self._clip_high  = clip_high
         self._drs        = DisplayRangeState(low_pct=clip_low, high_pct=clip_high)
         self._processing = dict(processing) if processing else {}
+        self._processing_roi_error: str = ""
         # Undo / redo stacks for processing state. Each entry is a deep copy
         # of the full processing dict at a prior point. Apply / Reset push
         # the previous state onto _undo_stack and clear _redo_stack; the
@@ -2064,6 +2066,22 @@ class ImageViewerDialog(QDialog):
         # display array: raw with processing applied (no grain overlay — that's visual only)
         if self._raw_arr is not None and self._processing:
             try:
+                self._processing_roi_error = ""
+                state = processing_state_from_gui(self._processing or {})
+                missing = missing_roi_references(state, self._image_roi_set)
+                if missing:
+                    refs = ", ".join(
+                        f"{m['param']}={m['value']}" for m in missing[:3]
+                    )
+                    if len(missing) > 3:
+                        refs += f", +{len(missing) - 3} more"
+                    self._processing_roi_error = (
+                        "Processing paused: missing ROI reference(s): " + refs
+                    )
+                    if hasattr(self, "_status_lbl"):
+                        self._status_lbl.setText(self._processing_roi_error)
+                    self._display_arr = self._raw_arr
+                    return
                 try:
                     self._display_arr = _apply_processing(
                         self._raw_arr,
@@ -2077,6 +2095,7 @@ class ImageViewerDialog(QDialog):
             except Exception:
                 self._display_arr = self._raw_arr
         else:
+            self._processing_roi_error = ""
             self._display_arr = self._raw_arr
         new_shape = self._display_arr.shape if self._display_arr is not None else None
         if reset_zoom_if_shape_changed and old_shape is not None and new_shape != old_shape:
@@ -2337,15 +2356,15 @@ class ImageViewerDialog(QDialog):
     def _load_image_roi_set(self, entry: "SxmFile") -> None:
         """Load ROIs from <stem>.rois.json sidecar if it exists, else create empty set."""
         from probeflow.core.roi import ROISet
-        sidecar = entry.path.with_suffix("").with_suffix(".rois.json")
-        if sidecar.exists():
-            try:
-                data = json.loads(sidecar.read_text(encoding="utf-8"))
-                self._image_roi_set = ROISet.from_dict(data)
-            except Exception:
-                self._image_roi_set = ROISet(image_id=str(entry.path))
-        else:
+        from probeflow.io.roi_sidecar import load_roi_set_sidecar
+        try:
+            loaded, _sidecar = load_roi_set_sidecar(entry.path, missing_ok=True)
+        except Exception as exc:
             self._image_roi_set = ROISet(image_id=str(entry.path))
+            if hasattr(self, "_status_lbl"):
+                self._status_lbl.setText(f"Could not load ROI sidecar: {exc}")
+        else:
+            self._image_roi_set = loaded or ROISet(image_id=str(entry.path))
         self._zoom_lbl.set_roi_set(self._image_roi_set)
         if hasattr(self, "_roi_dock"):
             self._roi_dock.refresh(self._image_roi_set)
@@ -2355,14 +2374,12 @@ class ImageViewerDialog(QDialog):
         if self._image_roi_set is None:
             return
         entry = self._entries[self._idx]
-        sidecar = entry.path.with_suffix("").with_suffix(".rois.json")
+        from probeflow.io.roi_sidecar import save_roi_set_sidecar
         try:
-            sidecar.write_text(
-                json.dumps(self._image_roi_set.to_dict(), indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
+            save_roi_set_sidecar(self._image_roi_set, entry.path)
+        except Exception as exc:
+            if hasattr(self, "_status_lbl"):
+                self._status_lbl.setText(f"Could not save ROI sidecar: {exc}")
 
     def _on_image_roi_set_changed(self) -> None:
         self._zoom_lbl.set_roi_set(self._image_roi_set)
@@ -3389,6 +3406,12 @@ class ImageViewerDialog(QDialog):
 
     def _on_save_png(self):
         entry = self._entries[self._idx]
+        if getattr(self, "_processing_roi_error", ""):
+            self._status_lbl.setText(
+                f"Cannot export while processing has stale ROI references. "
+                f"{self._processing_roi_error}"
+            )
+            return
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save PNG", str(Path.home() / f"{entry.stem}_viewer.png"),
             "PNG images (*.png)")
