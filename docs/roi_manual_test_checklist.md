@@ -11,7 +11,7 @@ Run this on a representative STM image before moving on to DisplayLayer work.
 - Rename it from the ROI Manager and from the canvas context menu.
 - Delete it with the Delete key and from the context menu.
 - Run FFT on the rectangle ROI and confirm it uses the selected region.
-- Run histogram/autoclip region workflows where available and confirm they use the selected ROI.
+- Run histogram and background-subtraction region workflows where available and confirm they use the selected ROI.
 
 ## Line ROI
 
@@ -65,4 +65,4 @@ Run this on a representative STM image before moving on to DisplayLayer work.
 - Confirm rename/delete/invert behave consistently.
 - Confirm area-only operations are disabled for line and point ROIs.
 - Confirm line profile is enabled only for line ROIs.
-- Confirm FFT/histogram/autoclip/background entries either work on the selected ROI or are disabled/absent when not implemented.
+- Confirm FFT, histogram, line-profile, and background entries either work on the selected ROI or are disabled/absent when not implemented.

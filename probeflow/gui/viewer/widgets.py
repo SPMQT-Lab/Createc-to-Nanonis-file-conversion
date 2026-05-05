@@ -269,6 +269,7 @@ class LineProfilePanel(QWidget):
         self._ax.set_facecolor(bg)
         self._ax.text(0.5, 0.5, message, ha="center", va="center",
                       transform=self._ax.transAxes, color=fg, fontsize=9)
+        self._ax.set_title("")
         self._ax.set_xticks([])
         self._ax.set_yticks([])
         for spine in self._ax.spines.values():

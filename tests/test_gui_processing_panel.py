@@ -459,6 +459,25 @@ def test_viewer_line_profile_sync_uses_active_line_roi(qapp):
     assert called == [line.id]
 
 
+def test_line_profile_panel_empty_clears_source_title(qapp):
+    from probeflow.gui.viewer.widgets import LineProfilePanel
+
+    panel = LineProfilePanel()
+    panel.plot_profile(
+        np.asarray([0.0, 1.0]),
+        np.asarray([2.0, 3.0]),
+        y_label="Height [m]",
+        theme={},
+    )
+    panel.set_source_label("Line ROI: line_1 (abc12345)", theme={})
+
+    assert panel._ax.get_title() == "Line ROI: line_1 (abc12345)"
+
+    panel.show_empty(theme={})
+
+    assert panel._ax.get_title() == ""
+
+
 def test_viewer_dialog_initializes_panel_from_thumbnail_processing(qapp, monkeypatch):
     from probeflow.gui import ImageViewerDialog, ProcessingControlPanel, SxmFile
 
