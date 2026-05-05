@@ -18,9 +18,30 @@ can be wrapped by provenance-aware adapters.
 """
 
 from probeflow.provenance import export as _impl
+from probeflow.provenance.graph import (
+    ImageNode,
+    MeasurementNode,
+    Node,
+    OpRegistry,
+    ScanGraph,
+    graph_from_dict,
+    graph_to_dict,
+    materialize_image,
+)
 
 globals().update({
     name: value
     for name, value in vars(_impl).items()
     if not (name.startswith("__") and name.endswith("__"))
 })
+
+__all__ = [
+    "ImageNode",
+    "MeasurementNode",
+    "Node",
+    "OpRegistry",
+    "ScanGraph",
+    "graph_from_dict",
+    "graph_to_dict",
+    "materialize_image",
+]
