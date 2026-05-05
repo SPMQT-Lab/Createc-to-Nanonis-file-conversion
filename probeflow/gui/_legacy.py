@@ -1364,6 +1364,7 @@ class ImageViewerDialog(QDialog):
         self._raw_arr: Optional[np.ndarray] = None
         self._display_arr: Optional[np.ndarray] = None  # raw or processed, for histogram/export
         self._spec_markers: list[dict] = []
+        self._spec_roi_set: "object | None" = None  # ROISet when spec positions are loaded
         self._scan_header: dict = {}
         self._scan_range_m: Optional[tuple] = None
         self._scan_shape: Optional[tuple] = None
@@ -2153,6 +2154,26 @@ class ImageViewerDialog(QDialog):
                 except Exception:
                     continue
 
+            # Build a parallel ROISet with the same positions as point ROIs.
+            try:
+                from probeflow.core.roi import ROI, ROISet
+                _roi_set = ROISet(image_id=str(entry.path))
+                for m in markers:
+                    frac_x = float(m.get("frac_x", 0.5))
+                    frac_y = float(m.get("frac_y", 0.5))
+                    _entry = m.get("entry")
+                    stem = getattr(_entry, "stem", None) or "spectrum"
+                    name = f"spectrum_{stem}"
+                    linked = str(getattr(_entry, "path", "") or "")
+                    _shape = self._scan_shape or (1, 1)
+                    px_x = frac_x * (_shape[1] - 1)
+                    px_y = frac_y * (_shape[0] - 1)
+                    _roi_set.add(ROI.new("point", {"x": px_x, "y": px_y},
+                                         name=name,
+                                         linked_file=linked or None))
+                self._spec_roi_set = _roi_set
+            except Exception:
+                self._spec_roi_set = None
             self._spec_markers = markers
             if self._spec_show_cb.isChecked():
                 self._zoom_lbl.set_markers(markers)

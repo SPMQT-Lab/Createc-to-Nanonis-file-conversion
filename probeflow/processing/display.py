@@ -133,6 +133,7 @@ def array_to_uint8(
 def histogram_from_array(
     arr: np.ndarray,
     *,
+    roi: "Any | None" = None,
     bins: int = 256,
     clip_percentiles: tuple[float, float] = (1.0, 99.0),
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -145,6 +146,13 @@ def histogram_from_array(
     ----------
     arr:
         Input array (any shape).
+    roi:
+        Optional :class:`probeflow.core.roi.ROI`.  When provided, only pixels
+        within the ROI mask are included in the histogram.  All ROI kinds are
+        accepted (a point ROI yields a single-pixel histogram; a line ROI
+        yields the histogram of pixels along the 1-pixel-wide line).  The bin
+        range is still derived from the *full* array so histograms from
+        different ROIs on the same scan are directly comparable.
     bins:
         Number of histogram bins.
     clip_percentiles:
@@ -160,9 +168,18 @@ def histogram_from_array(
     Raises
     ------
     ValueError
-        If *arr* contains no finite values.
+        If *arr* (or the ROI-masked subset) contains no finite values.
     """
-    finite = finite_values(arr)
+    if arr.ndim != 2 and roi is not None:
+        raise ValueError("roi parameter requires a 2-D array")
+
+    if roi is not None:
+        mask = roi.to_mask(arr.shape[:2])
+        masked = np.asarray(arr, dtype=np.float64)[mask]
+        finite = masked[np.isfinite(masked)]
+    else:
+        finite = finite_values(arr)
+
     if finite.size == 0:
         raise ValueError("Array contains no finite values — cannot compute histogram.")
 

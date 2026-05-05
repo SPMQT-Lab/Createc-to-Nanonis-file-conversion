@@ -63,51 +63,13 @@ def roi_geometry_mask(
     geometry: dict[str, Any] | None,
 ) -> np.ndarray | None:
     """Return a boolean mask for a rectangle/ellipse/polygon ROI geometry."""
-
     if not geometry:
         return None
-    try:
-        kind = str(geometry.get("kind", ""))
-    except AttributeError:
+    from probeflow.core.roi import roi_from_legacy_geometry_dict
+    roi = roi_from_legacy_geometry_dict(shape, geometry)
+    if roi is None:
         return None
-    if kind == "rectangle":
-        rect = _rect_from_geometry(shape, geometry)
-        try:
-            x0, y0, x1, y1 = _clamped_rect(shape, rect)
-        except ValueError:
-            return None
-        mask = np.zeros(shape, dtype=bool)
-        mask[y0:y1 + 1, x0:x1 + 1] = True
-        return mask
-    if kind == "ellipse":
-        rect = _rect_from_geometry(shape, geometry)
-        try:
-            x0, y0, x1, y1 = _clamped_rect(shape, rect)
-        except ValueError:
-            return None
-        yy, xx = np.mgrid[:shape[0], :shape[1]]
-        cx = (x0 + x1) / 2.0
-        cy = (y0 + y1) / 2.0
-        rx = max(0.5, (x1 - x0 + 1) / 2.0)
-        ry = max(0.5, (y1 - y0 + 1) / 2.0)
-        return (((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2) <= 1.0
-    if kind == "polygon":
-        points = _points_from_geometry(shape, geometry)
-        if len(points) < 3:
-            return None
-        yy, xx = np.mgrid[:shape[0], :shape[1]]
-        x = xx.astype(float) + 0.5
-        y = yy.astype(float) + 0.5
-        inside = np.zeros(shape, dtype=bool)
-        xj, yj = points[-1]
-        for xi, yi in points:
-            crosses = ((yi > y) != (yj > y)) & (
-                x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi
-            )
-            inside ^= crosses
-            xj, yj = xi, yi
-        return inside
-    return None
+    return roi.to_mask(shape)
 
 
 def _rect_from_geometry(shape: tuple[int, int], geometry: dict[str, Any]):
@@ -258,9 +220,124 @@ class ProcessingState:
         return cls(steps=steps)
 
 
+# ── ROI expression resolver ───────────────────────────────────────────────────
+
+def resolve_roi_expr(
+    expr: "dict[str, Any] | str | None",
+    roi_set: "Any | None",
+    image_shape: "tuple[int, int]",
+) -> "Any | None":
+    """Resolve a ROI expression from a processing step param to a concrete ROI.
+
+    Supported expression forms
+    --------------------------
+    ``None``
+        No ROI — returns ``None``.
+    ``{"ref": "<name_or_id>"}``
+        Look up a ROI by name or UUID in *roi_set*.
+    ``{"invert": "<name_or_id>"}``
+        Compute the Shapely invert of the named ROI within *image_shape*.
+    ``{"combine": ["<id_or_name>", ...], "mode": "<union|intersection|...>"}``
+        Combine the named ROIs using Shapely geometry algebra.
+
+    Raises
+    ------
+    KeyError
+        If a referenced ROI name / UUID is not found in *roi_set*.
+    ValueError
+        If the expression is malformed or *roi_set* is ``None`` for an
+        expression that needs it.
+    """
+    if expr is None:
+        return None
+    if not isinstance(expr, dict):
+        raise ValueError(
+            f"ROI expression must be a dict or None, got {type(expr).__name__!r}: {expr!r}"
+        )
+    if roi_set is None:
+        raise ValueError(
+            "ROI expression requires a roi_set but none was provided to "
+            "apply_processing_state."
+        )
+
+    def _lookup(name_or_id: str) -> "Any":
+        roi = roi_set.get(name_or_id) or roi_set.get_by_name(name_or_id)
+        if roi is None:
+            raise KeyError(
+                f"ROI {name_or_id!r} not found in roi_set "
+                f"(available: {', '.join(r.name for r in roi_set.rois) or '(none)'})"
+            )
+        return roi
+
+    if "ref" in expr:
+        return _lookup(str(expr["ref"]))
+
+    if "invert" in expr:
+        from probeflow.core.roi import invert as _invert
+        return _invert(_lookup(str(expr["invert"])), image_shape)
+
+    if "combine" in expr:
+        from probeflow.core.roi import combine as _combine
+        rois = [_lookup(str(rid)) for rid in expr["combine"]]
+        mode = str(expr.get("mode", "union"))
+        return _combine(rois, mode)
+
+    raise ValueError(
+        f"Unrecognised ROI expression keys: {list(expr.keys())!r}. "
+        "Expected 'ref', 'invert', or 'combine'."
+    )
+
+
+def _resolve_bg_roi_param(
+    params: "dict[str, Any]",
+    prefix: str,
+    image_shape: "tuple[int, int]",
+    roi_set: "Any | None",
+) -> "Any | None":
+    """Resolve fit_roi / apply_roi / exclude_roi from a plane_bg step params dict."""
+    roi_id = params.get(f"{prefix}_id")
+    roi_expr = params.get(f"{prefix}_expr")
+
+    if roi_id is not None and roi_expr is not None:
+        raise ValueError(
+            f"Cannot specify both {prefix}_id and {prefix}_expr in the same step."
+        )
+
+    if roi_id is not None:
+        if roi_set is None:
+            import warnings
+            warnings.warn(
+                f"plane_bg step has {prefix}_id={roi_id!r} but no roi_set was passed "
+                "to apply_processing_state — ROI parameter ignored.",
+                UserWarning,
+                stacklevel=4,
+            )
+            return None
+        roi = roi_set.get(str(roi_id)) or roi_set.get_by_name(str(roi_id))
+        if roi is None:
+            import warnings
+            warnings.warn(
+                f"plane_bg: {prefix}_id={roi_id!r} not found in roi_set — "
+                "ROI parameter ignored.",
+                UserWarning,
+                stacklevel=4,
+            )
+            return None
+        return roi
+
+    if roi_expr is not None:
+        return resolve_roi_expr(roi_expr, roi_set, image_shape)
+
+    return None
+
+
 # ── Canonical apply function ──────────────────────────────────────────────────
 
-def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarray:
+def apply_processing_state(
+    arr: np.ndarray,
+    state: "ProcessingState",
+    roi_set: "Any | None" = None,
+) -> np.ndarray:
     """Apply *state* steps in order to *arr*.
 
     Parameters
@@ -269,6 +346,12 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
         Input 2-D numeric array (will not be mutated).
     state:
         Processing steps to apply.
+    roi_set:
+        Optional :class:`probeflow.core.roi.ROISet`.  When a ``roi`` step
+        references an ROI by ``roi_id``, the ROI is looked up in this set at
+        execution time.  If the ID is not found, the step is skipped with a
+        warning.  Inline geometry (``rect`` / ``geometry`` params) still works
+        without a ``roi_set``.
 
     Returns
     -------
@@ -299,13 +382,20 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
             a = _proc.align_rows(a, method=p.get("method", "median"))
         elif step.op == "plane_bg":
             fit_geometry = p.get("fit_geometry")
-            fit_mask = roi_geometry_mask(a.shape, fit_geometry) if fit_geometry else None
+            fit_mask_legacy = roi_geometry_mask(a.shape, fit_geometry) if fit_geometry else None
+            # Resolve new ROI expression parameters (fit_roi, apply_roi, exclude_roi)
+            fit_roi = _resolve_bg_roi_param(p, "fit_roi", a.shape, roi_set)
+            apply_roi = _resolve_bg_roi_param(p, "apply_roi", a.shape, roi_set)
+            exclude_roi = _resolve_bg_roi_param(p, "exclude_roi", a.shape, roi_set)
             a = _proc.subtract_background(
                 a,
                 order=int(p.get("order", 1)),
+                fit_roi=fit_roi,
+                apply_roi=apply_roi,
+                exclude_roi=exclude_roi,
                 step_tolerance=bool(p.get("step_tolerance", False)),
                 fit_rect=p.get("fit_rect"),
-                fit_mask=fit_mask,
+                fit_mask=fit_mask_legacy,
             )
         elif step.op == "stm_line_bg":
             a = _proc.stm_line_background(
@@ -397,18 +487,46 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
                 continue
             if nested.op not in _ROI_ELIGIBLE_OPS:
                 continue
-            geometry = p.get("geometry")
-            if geometry:
-                mask = roi_geometry_mask(a.shape, geometry)
-                bounds = roi_geometry_bounds(a.shape, geometry)
-            else:
-                try:
-                    x0, y0, x1, y1 = _clamped_rect(a.shape, p.get("rect", ()))
-                except ValueError:
+            # Three ways to specify the region:
+            # 1. roi_id  — look up by UUID in the provided roi_set
+            # 2. geometry — legacy dict format
+            # 3. rect    — (x0, y0, x1, y1) pixel rect
+            roi_id = p.get("roi_id")
+            if roi_id is not None:
+                if roi_set is None:
+                    import warnings
+                    warnings.warn(
+                        f"roi step references roi_id={roi_id!r} but no roi_set "
+                        "was passed to apply_processing_state — step skipped.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                     continue
-                mask = np.zeros(a.shape, dtype=bool)
-                mask[y0:y1 + 1, x0:x1 + 1] = True
-                bounds = (x0, y0, x1, y1)
+                roi_obj = roi_set.get(roi_id)
+                if roi_obj is None:
+                    import warnings
+                    warnings.warn(
+                        f"roi_id={roi_id!r} not found in roi_set — step skipped.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                mask = roi_obj.to_mask(a.shape)
+                r0, r1, c0, c1 = roi_obj.bounds(a.shape)
+                bounds = (c0, r0, c1, r1)  # (x0, y0, x1, y1)
+            else:
+                geometry = p.get("geometry")
+                if geometry:
+                    mask = roi_geometry_mask(a.shape, geometry)
+                    bounds = roi_geometry_bounds(a.shape, geometry)
+                else:
+                    try:
+                        x0, y0, x1, y1 = _clamped_rect(a.shape, p.get("rect", ()))
+                    except ValueError:
+                        continue
+                    mask = np.zeros(a.shape, dtype=bool)
+                    mask[y0:y1 + 1, x0:x1 + 1] = True
+                    bounds = (x0, y0, x1, y1)
             if mask is None or bounds is None or not mask.any():
                 continue
             x0, y0, x1, y1 = bounds
@@ -444,3 +562,87 @@ def apply_processing_state(arr: np.ndarray, state: ProcessingState) -> np.ndarra
             )
 
     return a
+
+
+# ── Geometric transform + ROISet update ───────────────────────────────────────
+
+def apply_geometric_op_to_scan(
+    scan: "Any",
+    operation: str,
+    params: dict | None = None,
+    roi_set: "Any | None" = None,
+) -> tuple["Any", "Any | None"]:
+    """Apply a geometric transform to all planes of *scan*, updating *roi_set*.
+
+    Parameters
+    ----------
+    scan
+        A Scan object with a ``.planes`` list of 2-D arrays.
+    operation
+        One of: "flip_horizontal", "flip_vertical", "rot90_cw", "rot180",
+        "rot270_cw", "rotate_arbitrary".
+    params
+        Extra parameters for the operation.  For ``rotate_arbitrary``:
+        ``{"angle_degrees": float, "order": int}``.  For lossless ops: {}.
+    roi_set
+        Optional :class:`~probeflow.core.roi.ROISet`.  If provided, ROI
+        coordinates are transformed in-place and invalidated ROIs are removed
+        with a warning.
+
+    Returns
+    -------
+    (scan, roi_set)
+        *scan* is mutated in place (planes updated); *roi_set* is also mutated
+        in place (invalidated ROIs removed) if provided.
+    """
+    import warnings as _warnings
+    import probeflow.processing as _proc
+
+    params = params or {}
+    if not scan.planes:
+        return scan, roi_set
+
+    image_shape = scan.planes[0].shape  # (Ny, Nx)
+
+    _LOSSLESS = frozenset({
+        "flip_horizontal", "flip_vertical",
+        "rot90_cw", "rot180", "rot270_cw",
+    })
+
+    for i, plane in enumerate(scan.planes):
+        if operation == "flip_horizontal":
+            scan.planes[i] = _proc.flip_horizontal(plane)
+        elif operation == "flip_vertical":
+            scan.planes[i] = _proc.flip_vertical(plane)
+        elif operation == "rot90_cw":
+            scan.planes[i] = _proc.rotate_90_cw(plane)
+        elif operation == "rot180":
+            scan.planes[i] = _proc.rotate_180(plane)
+        elif operation == "rot270_cw":
+            scan.planes[i] = _proc.rotate_270_cw(plane)
+        elif operation == "rotate_arbitrary":
+            scan.planes[i] = _proc.rotate_arbitrary(
+                plane,
+                angle_degrees=float(params.get("angle_degrees", 0.0)),
+                order=int(params.get("order", 1)),
+            )
+        else:
+            raise ValueError(f"apply_geometric_op_to_scan: unknown operation {operation!r}")
+
+    if roi_set is not None:
+        invalidated = roi_set.transform_all(operation, params, image_shape)
+        if operation in _LOSSLESS and invalidated:
+            raise RuntimeError(
+                f"Internal error: lossless operation {operation!r} invalidated "
+                f"{len(invalidated)} ROI(s). This is a bug in ROI.transform()."
+            )
+        if operation == "rotate_arbitrary" and invalidated:
+            roi_set.rois = [r for r in roi_set.rois if r.id not in set(invalidated)]
+            _warnings.warn(
+                f"rotate_arbitrary invalidated {len(invalidated)} ROI(s). "
+                "They have been removed from the ROISet.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    return scan, roi_set

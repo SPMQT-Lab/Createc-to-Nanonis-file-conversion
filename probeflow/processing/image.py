@@ -238,34 +238,83 @@ def subtract_background(
     arr: np.ndarray,
     order: int = 1,
     *,
+    fit_roi: "Any | None" = None,
+    apply_roi: "Any | None" = None,
+    exclude_roi: "Any | None" = None,
     step_tolerance: bool = False,
     step_threshold_deg: float = 3.0,
     fit_rect: Optional[tuple[int, int, int, int]] = None,
     fit_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Fit and subtract a 2D polynomial background from an image.
+    """Fit and subtract a 2-D polynomial background from an image.
 
     Parameters
     ----------
     arr:
-        2D image array.
+        2-D image array.
     order:
         Total polynomial order. Supported values are 1, 2, 3, 4.
+    fit_roi:
+        ROI whose pixels are used to *estimate* the background.  Pixels
+        outside this region do not influence the polynomial fit, but the
+        fitted background is extrapolated and (optionally) subtracted over
+        the full image or ``apply_roi``.  ``None`` means all pixels.
+    apply_roi:
+        ROI whose pixels are *modified* by subtracting the fitted background.
+        Pixels outside this region are returned unchanged.  ``None`` means
+        subtract the background everywhere.
+
+        .. note::
+            Where ``apply_roi`` ends, there will be a discontinuity in the
+            output equal to the local background value.  This is correct
+            behaviour for the "patch-only" correction case.  For per-terrace
+            fits where a smooth boundary matters, ensure ``fit_roi`` includes
+            the full terrace and ``apply_roi = None``.
+
+    exclude_roi:
+        ROI whose pixels are *removed from the fit*.  Applied after
+        ``fit_roi``; the effective fit region is
+        ``fit_roi AND NOT exclude_roi``.  If ``exclude_roi`` is partially
+        outside ``fit_roi``, only the overlapping part is excluded.
+        ``None`` means no exclusion.
+
+    Canonical use patterns
+    ----------------------
+    Global plane fit (standard background removal)::
+
+        subtract_background(img)
+
+    Fit on a clean terrace, subtract globally::
+
+        subtract_background(img, fit_roi=terrace_roi)
+
+    Fit on a terrace, apply only to an adjacent region::
+
+        subtract_background(img, fit_roi=terrace_roi, apply_roi=target_roi)
+
+    Fit globally but exclude contaminated molecules::
+
+        subtract_background(img, exclude_roi=molecules_roi)
+
+    Correct only a small patch (fit and apply to the same region)::
+
+        subtract_background(img, fit_roi=patch_roi, apply_roi=patch_roi)
+
+    Legacy parameters (still accepted, combined with ROI parameters)
+    -----------------------------------------------------------------
     step_tolerance:
         When True, use a step-tolerant surface mask: pixels whose finite-
         difference gradient exceeds ``tan(step_threshold_deg)`` are excluded
-        from this polynomial surface fit. Falls back to a full-pixel fit when
-        fewer than ``n_terms`` pixels remain after masking.
+        from the fit. Falls back to a full-pixel fit when fewer than
+        ``n_terms`` pixels remain after masking.
     step_threshold_deg:
         Slope angle (degrees) above which a pixel is treated as a step edge.
     fit_rect:
-        Optional inclusive pixel rectangle ``(x0, y0, x1, y1)`` limiting which
-        pixels contribute to the polynomial fit. The fitted background is still
-        reconstructed and subtracted over the whole image.
+        Optional inclusive pixel rectangle ``(x0, y0, x1, y1)`` restricting
+        the fit region.  Combined with ``fit_roi`` (intersection).
     fit_mask:
-        Optional boolean mask selecting pixels that contribute to the fit.
-        Combined with ``fit_rect`` and finite-pixel filtering when both are
-        supplied.
+        Optional boolean mask restricting the fit region.  Combined with
+        ``fit_roi`` and ``fit_rect`` (intersection).
 
     Coordinates are normalised to [-1, 1] for numerical stability. Only
     finite pixels participate in the least-squares fit. NaNs in the input
@@ -289,54 +338,84 @@ def subtract_background(
 
     finite = np.isfinite(flat_z)
     n_terms = (order + 1) * (order + 2) // 2
+    # Graceful fallback when the image itself lacks enough finite pixels
     if finite.sum() < n_terms:
         return arr
 
-    user_fit_mask = fit_mask
-    fit_mask = finite
+    # ── Build fit mask from new ROI parameters ────────────────────────────────
+    user_fit_mask = fit_mask  # legacy param
+    has_explicit_region = (
+        fit_roi is not None or exclude_roi is not None
+        or fit_rect is not None or user_fit_mask is not None
+    )
+
+    # Merge fit_roi and exclude_roi into a single ROI-level mask
+    roi_fit_mask: Optional[np.ndarray] = None
+    if fit_roi is not None:
+        roi_fit_mask = np.asarray(fit_roi.to_mask(arr.shape), dtype=bool)
+    if exclude_roi is not None:
+        excl = np.asarray(exclude_roi.to_mask(arr.shape), dtype=bool)
+        roi_fit_mask = (~excl) if roi_fit_mask is None else (roi_fit_mask & ~excl)
+
+    # ── Accumulate fit_mask (intersection of all constraints) ─────────────────
+    fit_mask_acc = finite.copy()
+
     if fit_rect is not None:
         try:
-            x0, y0, x1, y1 = [int(v) for v in fit_rect]
+            x0r, y0r, x1r, y1r = [int(v) for v in fit_rect]
         except (TypeError, ValueError):
             return arr
-        x0 = max(0, min(Nx - 1, x0))
-        x1 = max(0, min(Nx - 1, x1))
-        y0 = max(0, min(Ny - 1, y0))
-        y1 = max(0, min(Ny - 1, y1))
-        if x1 <= x0 or y1 <= y0:
+        x0r = max(0, min(Nx - 1, x0r))
+        x1r = max(0, min(Nx - 1, x1r))
+        y0r = max(0, min(Ny - 1, y0r))
+        y1r = max(0, min(Ny - 1, y1r))
+        if x1r <= x0r or y1r <= y0r:
             return arr
         rect_mask = np.zeros(arr.shape, dtype=bool)
-        rect_mask[y0:y1 + 1, x0:x1 + 1] = True
-        fit_mask = fit_mask & rect_mask.ravel()
-        if fit_mask.sum() < n_terms:
-            return arr
+        rect_mask[y0r:y1r + 1, x0r:x1r + 1] = True
+        fit_mask_acc &= rect_mask.ravel()
 
     if user_fit_mask is not None:
         try:
-            user_mask = np.asarray(user_fit_mask, dtype=bool)
+            um = np.asarray(user_fit_mask, dtype=bool)
         except (TypeError, ValueError):
             return arr
-        if user_mask.shape != arr.shape:
+        if um.shape != arr.shape:
             return arr
-        fit_mask = fit_mask & user_mask.ravel()
-        if fit_mask.sum() < n_terms:
-            return arr
+        fit_mask_acc &= um.ravel()
 
+    if roi_fit_mask is not None:
+        fit_mask_acc &= roi_fit_mask.ravel()
+
+    if fit_mask_acc.sum() < n_terms:
+        if has_explicit_region:
+            raise ValueError(
+                f"Fit region has only {int(fit_mask_acc.sum())} pixel(s), but order "
+                f"{order} requires at least {n_terms} pixels."
+            )
+        return arr  # graceful fallback for whole-image degenerate cases
+
+    # ── Step-tolerance masking ────────────────────────────────────────────────
     if step_tolerance and Ny >= 3 and Nx >= 3:
         gy, gx = np.gradient(np.where(np.isfinite(arr), arr, _finite_median(arr)))
         slope_mag = np.sqrt(gx ** 2 + gy ** 2).ravel()
         tan_thresh = math.tan(math.radians(step_threshold_deg))
-        candidate = finite & (slope_mag < tan_thresh)
-        if fit_rect is not None or user_fit_mask is not None:
-            candidate = candidate & fit_mask
+        candidate = finite & (slope_mag < tan_thresh) & fit_mask_acc
         if candidate.sum() >= n_terms:
-            fit_mask = candidate
+            fit_mask_acc = candidate
 
-    A = _poly_terms(flat_x[fit_mask], flat_y[fit_mask], order)
-    b = flat_z[fit_mask]
+    # ── Fit polynomial ────────────────────────────────────────────────────────
+    A = _poly_terms(flat_x[fit_mask_acc], flat_y[fit_mask_acc], order)
+    b = flat_z[fit_mask_acc]
     coeffs, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
 
     bg = (_poly_terms(flat_x, flat_y, order) @ coeffs).reshape(Ny, Nx)
+
+    # ── Apply background subtraction ──────────────────────────────────────────
+    if apply_roi is not None:
+        apply_mask = np.asarray(apply_roi.to_mask(arr.shape), dtype=bool)
+        arr[apply_mask] -= bg[apply_mask]
+        return arr
     return arr - bg
 
 
@@ -1286,23 +1365,29 @@ def tv_denoise(
 
 def line_profile(
     arr: np.ndarray,
-    p0_px: tuple[float, float],
-    p1_px: tuple[float, float],
+    p0_px: "tuple[float, float] | None" = None,
+    p1_px: "tuple[float, float] | None" = None,
     *,
+    roi: "Any | None" = None,
     pixel_size_x_m: float,
     pixel_size_y_m: float,
     n_samples: Optional[int] = None,
     width_px: float = 1.0,
     interp: str = "linear",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Sample ``arr`` along the segment from ``p0_px`` to ``p1_px``.
+    """Sample ``arr`` along a line segment.
 
     Parameters
     ----------
     arr
         2-D scan plane (any units).
     p0_px, p1_px
-        Endpoint pixel coordinates ``(x, y)``. May be sub-pixel.
+        Endpoint pixel coordinates ``(x, y)``. May be sub-pixel. Required
+        when *roi* is ``None``.
+    roi
+        Optional :class:`probeflow.core.roi.ROI` with ``kind='line'``.  When
+        provided, *p0_px* and *p1_px* are derived from the ROI geometry and
+        must not be supplied separately.  Any other kind raises ``ValueError``.
     pixel_size_x_m, pixel_size_y_m
         Physical pixel spacing in metres along x and y. Used to express the
         sample axis in metres (handles non-square pixels correctly).
@@ -1323,6 +1408,22 @@ def line_profile(
         ``s_m`` — distance along the line in metres (length ``n_samples``).
         ``z`` — sampled values, one per ``s_m`` entry.
     """
+    if roi is not None:
+        if roi.kind != "line":
+            raise ValueError(
+                f"line_profile requires roi.kind='line', got {roi.kind!r}"
+            )
+        if p0_px is not None or p1_px is not None:
+            raise ValueError(
+                "Provide either roi or p0_px/p1_px, not both"
+            )
+        g = roi.geometry
+        p0_px = (float(g["x1"]), float(g["y1"]))
+        p1_px = (float(g["x2"]), float(g["y2"]))
+    else:
+        if p0_px is None or p1_px is None:
+            raise ValueError("Either roi or both p0_px and p1_px must be provided")
+
     if arr.ndim != 2:
         raise ValueError("line_profile expects a 2-D array")
     if pixel_size_x_m <= 0 or pixel_size_y_m <= 0:
@@ -1552,7 +1653,164 @@ def fft_soft_border(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 16.  patch_interpolate  (ImageJ Patch_Interpolation port)
+# 16.  fft_magnitude  — ROI-aware FFT power-spectrum visualisation
+# ═════════════════════════════════════════════════════════════════════════════
+
+def fft_magnitude(
+    arr: np.ndarray,
+    roi: "Any | None" = None,
+    *,
+    pixel_size_x_m: float = 1.0,
+    pixel_size_y_m: float = 1.0,
+    window: str = "hann",
+    window_param: float = 0.25,
+    log_scale: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute the 2-D FFT magnitude spectrum of an image or a selected region.
+
+    Parameters
+    ----------
+    arr
+        2-D scan plane.
+    roi
+        Optional :class:`probeflow.core.roi.ROI`.  Three cases:
+
+        - ``None`` — FFT the whole image.
+        - ``roi.kind`` in ``{'rectangle', 'ellipse', 'polygon', 'freehand'}`` —
+          crop to the bounding box, zero pixels outside the ROI mask, then FFT
+          the crop.  For rectangular ROIs the mask covers the full crop.
+        - ``roi.kind`` in ``{'line', 'point'}`` — raises ``ValueError``; these
+          kinds do not define a 2-D region.
+
+    pixel_size_x_m, pixel_size_y_m
+        Physical pixel spacing in metres.  Used to express the k-space axes in
+        reciprocal nanometres (nm⁻¹).  The output array resolution is set by
+        the ROI crop, not the full image; pass the same pixel size as the parent
+        scan (pixel size is invariant to cropping).
+    window
+        Spatial-domain windowing applied before the DFT.
+
+        - ``"hann"`` — 2-D outer-product Hann window.  Recommended default:
+          suppresses the dominant wrap-around artefact at the price of a modest
+          spectral-resolution loss.
+        - ``"tukey"`` — 2-D Tukey window.  ``window_param`` controls the
+          plateau fraction (0 = Hann, 1 = rectangular).  Useful when the ROI
+          contains a clean periodic structure that fills most of the crop.
+        - ``"none"`` — no window.  Use only when the data is already periodic
+          across the boundary (rare) or when comparing raw amplitudes.
+
+    window_param
+        Shape parameter for the Tukey window (ignored for other windows).
+        Default 0.25.
+    log_scale
+        If ``True`` (default), the returned magnitude is ``log1p(|F|)``.  This
+        matches the GUI convention and compresses the dynamic range for display.
+        Pass ``False`` to obtain linear amplitudes for quantitative use.
+
+    Returns
+    -------
+    magnitude : np.ndarray, float64
+        2-D magnitude (or log-magnitude) array with the DC term centred.
+        Shape matches the bounding-box crop of the ROI (or the full image when
+        ``roi`` is ``None``).
+    qx : np.ndarray, float64
+        1-D array of k-space frequencies in nm⁻¹ along the x axis (columns),
+        centred at DC.
+    qy : np.ndarray, float64
+        1-D array of k-space frequencies in nm⁻¹ along the y axis (rows),
+        centred at DC.
+
+    Notes
+    -----
+    The output resolution is ``(Ny_crop, Nx_crop)`` where ``Ny_crop × Nx_crop``
+    is the bounding-box crop of the ROI.  A 64×64 ROI on a 512×512 scan
+    produces a 64×64 FFT; the k-space *range* shrinks but the pixel size (and
+    therefore the Nyquist limit) is unchanged.
+    """
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from probeflow.core.roi import ROI
+
+    _AREA_KINDS = {"rectangle", "ellipse", "polygon", "freehand"}
+    _INVALID_KINDS = {"line", "point"}
+
+    if roi is not None and roi.kind in _INVALID_KINDS:
+        raise ValueError(
+            f"fft_magnitude does not support roi.kind={roi.kind!r}. "
+            "Supported kinds: rectangle, ellipse, polygon, freehand, or None."
+        )
+
+    a = arr.astype(np.float64, copy=True)
+    Ny_full, Nx_full = a.shape
+
+    # ── 1. Crop to ROI bounding box and apply mask ────────────────────────────
+    if roi is None:
+        crop = a
+        mask = None
+    else:
+        r0, r1, c0, c1 = roi.bounds(a.shape)  # (row_min, row_max, col_min, col_max)
+        crop = a[r0:r1 + 1, c0:c1 + 1].copy()
+        if roi.kind != "rectangle":
+            full_mask = roi.to_mask(a.shape)
+            mask = full_mask[r0:r1 + 1, c0:c1 + 1]
+        else:
+            mask = None
+
+    Ny, Nx = crop.shape
+
+    # ── 2. Replace NaN / Inf with the local mean ──────────────────────────────
+    nan_mask = ~np.isfinite(crop)
+    mean_val = float(np.nanmean(crop)) if (~nan_mask).any() else 0.0
+    crop = np.where(nan_mask, mean_val, crop)
+
+    # ── 3. Zero outside non-rectangular ROI ──────────────────────────────────
+    if mask is not None:
+        crop = np.where(mask, crop, 0.0)
+
+    # ── 4. Remove mean ────────────────────────────────────────────────────────
+    crop = crop - crop.mean()
+
+    # ── 5. Apply spatial window ───────────────────────────────────────────────
+    wkey = str(window).lower()
+    if wkey not in {"hann", "tukey", "none"}:
+        raise ValueError(f"window must be 'hann', 'tukey', or 'none'; got {window!r}")
+
+    if wkey == "hann":
+        win2d = np.outer(np.hanning(Ny), np.hanning(Nx))
+    elif wkey == "tukey":
+        def _tukey_1d(n: int, alpha: float) -> np.ndarray:
+            if n < 2:
+                return np.ones(n)
+            w = np.ones(n)
+            edge = max(1, int(round(alpha / 2.0 * n)))
+            ramp = 0.5 * (1.0 - np.cos(np.linspace(0.0, math.pi, edge)))
+            w[:edge] = ramp
+            w[-edge:] = ramp[::-1]
+            return w
+        win2d = np.outer(_tukey_1d(Ny, window_param), _tukey_1d(Nx, window_param))
+    else:
+        win2d = np.ones((Ny, Nx), dtype=np.float64)
+
+    windowed = crop * win2d
+
+    # ── 6. Compute FFT and shift DC to centre ─────────────────────────────────
+    F = np.fft.fftshift(np.fft.fft2(windowed))
+    mag = np.abs(F)
+
+    if log_scale:
+        mag = np.log1p(mag)
+
+    # ── 7. Frequency axes in nm⁻¹ ────────────────────────────────────────────
+    dx_nm = pixel_size_x_m * 1e9
+    dy_nm = pixel_size_y_m * 1e9
+    qx = np.fft.fftshift(np.fft.fftfreq(Nx, d=dx_nm))
+    qy = np.fft.fftshift(np.fft.fftfreq(Ny, d=dy_nm))
+
+    return mag.astype(np.float64), qx, qy
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 17.  patch_interpolate  (ImageJ Patch_Interpolation port)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def patch_interpolate(

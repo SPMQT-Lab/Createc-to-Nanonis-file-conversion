@@ -69,6 +69,7 @@ class ExportProvenance:
     processing_state_hash: str | None = None
     artifact_id:        str | None = None
     warnings:           tuple[str, ...] = ()
+    rois:               dict[str, Any] | None = None
 
     # ── Serialisation ─────────────────────────────────────────────────────────
 
@@ -94,6 +95,7 @@ class ExportProvenance:
             "processing_state_hash": self.processing_state_hash,
             "artifact_id":       self.artifact_id,
             "warnings":          list(self.warnings),
+            "rois":              self.rois,
         }
 
     # ── Convenience constructor ───────────────────────────────────────────────
@@ -227,6 +229,7 @@ def build_scan_export_provenance(
     export_kind: str = "export",
     output_path=None,
     warnings: tuple[str, ...] | list[str] | None = None,
+    roi_set=None,
 ) -> ExportProvenance:
     """Shared provenance constructor for GUI, CLI, writers, and handoffs."""
     if processing_state is None:
@@ -278,6 +281,7 @@ def build_scan_export_provenance(
         processing_state_hash=processing_state_hash(ps_dict),
         artifact_id=artifact_id,
         warnings=tuple(warnings or ()),
+        rois=roi_set.to_dict() if roi_set is not None else None,
     )
 
 

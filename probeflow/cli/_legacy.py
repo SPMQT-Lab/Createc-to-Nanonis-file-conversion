@@ -891,6 +891,353 @@ def _cmd_classify(args) -> int:
     return 0
 
 
+def _load_named_roi(input_path: "Path", name_or_id: str, sidecar: "Path | None" = None):
+    """Load a named / UUID ROI from the scan's provenance sidecar.
+
+    Returns the ROI object or None (error already logged).
+    """
+    import json as _json
+    if sidecar is None:
+        sidecar = input_path.with_suffix("").with_suffix(".provenance.json")
+        if not sidecar.exists():
+            stem = input_path.stem
+            sidecar = input_path.parent / f"{stem}.provenance.json"
+    if not sidecar.exists():
+        log.error("No provenance sidecar found for %s (tried %s)", input_path, sidecar)
+        return None
+    try:
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log.error("Could not read sidecar %s: %s", sidecar, exc)
+        return None
+    rois_data = data.get("rois")
+    if not rois_data:
+        log.error("Sidecar %s contains no ROI data", sidecar)
+        return None
+    from probeflow.core.roi import ROISet
+    try:
+        roi_set = ROISet.from_dict(rois_data)
+    except Exception as exc:
+        log.error("Could not deserialise ROIs from sidecar: %s", exc)
+        return None
+    roi = roi_set.get(name_or_id) or roi_set.get_by_name(name_or_id)
+    if roi is None:
+        log.error("ROI %r not found in sidecar (available: %s)",
+                  name_or_id,
+                  ", ".join(r.name for r in roi_set.rois) or "(none)")
+        return None
+    return roi
+
+
+def _resolve_inline_roi(args, allow_line: bool = False):
+    """Parse --roi-rect / --roi-polygon / --roi-line from CLI args into an ROI.
+
+    Returns (roi_obj | None, error: bool).  If error is True, error is already
+    logged and the caller should return 1.
+    """
+    from probeflow.core.roi import ROI
+
+    has_rect = getattr(args, "roi_rect", None) is not None
+    has_poly = getattr(args, "roi_polygon", None) is not None
+    has_line = allow_line and getattr(args, "roi_line", None) is not None
+    has_named = getattr(args, "roi", None) is not None
+
+    specified = sum([has_rect, has_poly, has_line, has_named])
+    if specified > 1:
+        log.error("Specify at most one of --roi-rect, --roi-polygon, "
+                  "--roi-line, --roi")
+        return None, True
+    if specified == 0:
+        return None, False
+
+    if has_named:
+        sidecar = getattr(args, "sidecar", None)
+        roi = _load_named_roi(args.input, args.roi, sidecar)
+        if roi is None:
+            return None, True
+        return roi, False
+
+    if has_rect:
+        x0, y0, x1, y1 = args.roi_rect
+        roi = ROI.new("rectangle", {
+            "x": float(min(x0, x1)),
+            "y": float(min(y0, y1)),
+            "width": float(abs(x1 - x0)),
+            "height": float(abs(y1 - y0)),
+        })
+        return roi, False
+
+    if has_poly:
+        coords = list(args.roi_polygon)
+        if len(coords) < 6 or len(coords) % 2 != 0:
+            log.error("--roi-polygon requires an even number of coordinates "
+                      "(at least 6 for 3 vertices)")
+            return None, True
+        vertices = [[coords[i], coords[i + 1]] for i in range(0, len(coords), 2)]
+        roi = ROI.new("polygon", {"vertices": vertices})
+        return roi, False
+
+    if has_line:
+        x1_c, y1_c, x2_c, y2_c = args.roi_line
+        roi = ROI.new("line", {
+            "x1": float(x1_c), "y1": float(y1_c),
+            "x2": float(x2_c), "y2": float(y2_c),
+        })
+        return roi, False
+
+    return None, False
+
+
+def _cmd_plane_bg(args) -> int:
+    """Subtract a polynomial plane background with optional ROI parameters."""
+    setup_logging(args.verbose)
+    try:
+        scan = load_scan(args.input)
+    except Exception as exc:
+        log.error("Could not load %s: %s", args.input, exc)
+        return 1
+    if args.plane >= scan.n_planes:
+        log.error("Plane %d not present (file has %d)", args.plane, scan.n_planes)
+        return 1
+
+    arr = scan.planes[args.plane]
+
+    # ── Resolve fit ROI ──────────────────────────────────────────────────────
+    fit_roi_count = sum([
+        args.fit_roi is not None,
+        getattr(args, "fit_roi_rect", None) is not None,
+        getattr(args, "fit_roi_invert", None) is not None,
+        getattr(args, "fit_roi_union", None) is not None,
+    ])
+    if fit_roi_count > 1:
+        log.error("Specify at most one of --fit-roi, --fit-roi-rect, "
+                  "--fit-roi-invert, --fit-roi-union")
+        return 1
+
+    from probeflow.core.roi import ROI, invert as _invert, combine as _combine
+    fit_roi = None
+    if args.fit_roi is not None:
+        fit_roi = _load_named_roi(args.input, args.fit_roi, args.sidecar)
+        if fit_roi is None:
+            return 1
+    elif getattr(args, "fit_roi_rect", None) is not None:
+        x0, y0, x1, y1 = args.fit_roi_rect
+        fit_roi = ROI.new("rectangle", {
+            "x": float(min(x0, x1)), "y": float(min(y0, y1)),
+            "width": float(abs(x1 - x0)), "height": float(abs(y1 - y0)),
+        })
+    elif getattr(args, "fit_roi_invert", None) is not None:
+        base = _load_named_roi(args.input, args.fit_roi_invert, args.sidecar)
+        if base is None:
+            return 1
+        try:
+            fit_roi = _invert(base, arr.shape)
+        except ValueError as exc:
+            log.error("--fit-roi-invert failed: %s", exc)
+            return 1
+    elif getattr(args, "fit_roi_union", None) is not None:
+        names = [n.strip() for n in args.fit_roi_union.split(",")]
+        rois = [_load_named_roi(args.input, n, args.sidecar) for n in names]
+        if any(r is None for r in rois):
+            return 1
+        try:
+            fit_roi = _combine(rois, "union")
+        except ValueError as exc:
+            log.error("--fit-roi-union failed: %s", exc)
+            return 1
+
+    # ── Resolve apply ROI ─────────────────────────────────────────────────────
+    apply_roi = None
+    if args.apply_roi is not None:
+        apply_roi = _load_named_roi(args.input, args.apply_roi, args.sidecar)
+        if apply_roi is None:
+            return 1
+    elif getattr(args, "apply_roi_rect", None) is not None:
+        x0, y0, x1, y1 = args.apply_roi_rect
+        apply_roi = ROI.new("rectangle", {
+            "x": float(min(x0, x1)), "y": float(min(y0, y1)),
+            "width": float(abs(x1 - x0)), "height": float(abs(y1 - y0)),
+        })
+
+    # ── Resolve exclude ROI ───────────────────────────────────────────────────
+    exclude_roi = None
+    if args.exclude_roi is not None:
+        exclude_roi = _load_named_roi(args.input, args.exclude_roi, args.sidecar)
+        if exclude_roi is None:
+            return 1
+    elif getattr(args, "exclude_roi_rect", None) is not None:
+        x0, y0, x1, y1 = args.exclude_roi_rect
+        exclude_roi = ROI.new("rectangle", {
+            "x": float(min(x0, x1)), "y": float(min(y0, y1)),
+            "width": float(abs(x1 - x0)), "height": float(abs(y1 - y0)),
+        })
+
+    # ── Build _Op for history recording and execution ─────────────────────────
+    params_hist: dict = {"order": args.order}
+    if args.step_tolerance:
+        params_hist["step_tolerance"] = True
+    if fit_roi is not None:
+        params_hist["fit_roi"] = getattr(fit_roi, "name", "inline")
+    if apply_roi is not None:
+        params_hist["apply_roi"] = getattr(apply_roi, "name", "inline")
+    if exclude_roi is not None:
+        params_hist["exclude_roi"] = getattr(exclude_roi, "name", "inline")
+
+    def _bg_op(a: np.ndarray) -> np.ndarray:
+        return _proc.subtract_background(
+            a,
+            order=args.order,
+            fit_roi=fit_roi,
+            apply_roi=apply_roi,
+            exclude_roi=exclude_roi,
+            step_tolerance=args.step_tolerance,
+        )
+
+    op = _Op("plane_bg", params_hist, fn=_bg_op)
+    try:
+        return _cmd_single_op(args, op)
+    except ValueError as exc:
+        log.error("plane-bg failed: %s", exc)
+        return 1
+
+
+def _cmd_histogram(args) -> int:
+    """Pixel-value histogram, optionally restricted to an ROI."""
+    setup_logging(args.verbose)
+    try:
+        scan = load_scan(args.input)
+    except Exception as exc:
+        log.error("Could not load %s: %s", args.input, exc)
+        return 1
+    if args.plane >= scan.n_planes:
+        log.error("Plane %d not present (file has %d)", args.plane, scan.n_planes)
+        return 1
+
+    arr = scan.planes[args.plane]
+
+    roi, err = _resolve_inline_roi(args)
+    if err:
+        return 1
+
+    from probeflow.processing.display import histogram_from_array
+    try:
+        counts, edges = histogram_from_array(arr, roi=roi, bins=args.bins)
+    except ValueError as exc:
+        log.error("Histogram failed: %s", exc)
+        return 1
+
+    if args.output is None:
+        print("# bin_centre\tcount")
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        for c, n in zip(centres, counts):
+            print(f"{c:.6e}\t{n}")
+        return 0
+
+    suffix = args.output.suffix.lower()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if suffix == ".csv":
+        with args.output.open("w", encoding="utf-8") as f:
+            f.write("# bin_edge_low,bin_edge_high,count\n")
+            for lo, hi, n in zip(edges[:-1], edges[1:], counts):
+                f.write(f"{lo:.6e},{hi:.6e},{n}\n")
+    elif suffix == ".png":
+        import matplotlib
+        matplotlib.use("Agg", force=False)
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(7, 3.5), dpi=150)
+        centres = 0.5 * (edges[:-1] + edges[1:])
+        ax.bar(centres, counts, width=(edges[1] - edges[0]), color="steelblue",
+               edgecolor="none")
+        ax.set_xlabel(f"{scan.plane_names[args.plane]} ({scan.plane_units[args.plane]})")
+        ax.set_ylabel("Count")
+        roi_desc = f" — ROI: {args.roi}" if getattr(args, "roi", None) else ""
+        ax.set_title(f"{scan.source_path.name} plane {args.plane}{roi_desc}")
+        fig.tight_layout()
+        fig.savefig(str(args.output))
+        import matplotlib.pyplot as _plt
+        _plt.close(fig)
+    else:
+        log.error("Unsupported output suffix %r — use .csv or .png", suffix)
+        return 1
+    log.info("[OK] histogram → %s", args.output)
+    return 0
+
+
+def _cmd_fft_spectrum(args) -> int:
+    """Compute the 2-D FFT magnitude spectrum of a scan plane or ROI."""
+    setup_logging(args.verbose)
+    try:
+        scan = load_scan(args.input)
+    except Exception as exc:
+        log.error("Could not load %s: %s", args.input, exc)
+        return 1
+    if args.plane >= scan.n_planes:
+        log.error("Plane %d not present (file has %d)", args.plane, scan.n_planes)
+        return 1
+
+    arr = scan.planes[args.plane]
+    Ny, Nx = arr.shape
+    w_m, h_m = scan.scan_range_m
+    px_x = w_m / Nx if Nx > 0 and w_m > 0 else 1.0
+    px_y = h_m / Ny if Ny > 0 and h_m > 0 else 1.0
+
+    roi, err = _resolve_inline_roi(args)
+    if err:
+        return 1
+
+    try:
+        mag, qx, qy = _proc.fft_magnitude(
+            arr,
+            roi,
+            pixel_size_x_m=px_x,
+            pixel_size_y_m=px_y,
+            window=args.window,
+            window_param=args.window_param,
+            log_scale=args.log_scale,
+        )
+    except ValueError as exc:
+        log.error("fft-spectrum failed: %s", exc)
+        return 1
+
+    if args.output is None:
+        # Print the top-5 peaks by magnitude
+        flat = mag.ravel()
+        top_idx = flat.argsort()[::-1][:5]
+        print(f"# qx (nm⁻¹)  qy (nm⁻¹)  magnitude")
+        for idx in top_idx:
+            iy, ix = divmod(int(idx), mag.shape[1])
+            print(f"{float(qx[ix]):.4f}\t{float(qy[iy]):.4f}\t{float(flat[idx]):.4e}")
+        return 0
+
+    suffix = args.output.suffix.lower()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    if suffix == ".png":
+        import matplotlib
+        matplotlib.use("Agg", force=False)
+        import matplotlib.pyplot as plt
+        from probeflow.processing.display import clip_range_from_array
+        vmin, vmax = clip_range_from_array(mag, 1.0, 99.9)
+        fig, ax = plt.subplots(figsize=(5, 5), dpi=150)
+        ax.imshow(
+            mag, cmap=args.colormap, origin="upper",
+            vmin=vmin, vmax=vmax,
+            extent=[float(qx[0]), float(qx[-1]), float(qy[-1]), float(qy[0])],
+        )
+        ax.set_xlabel("qx (nm⁻¹)")
+        ax.set_ylabel("qy (nm⁻¹)")
+        roi_desc = f" — ROI: {args.roi}" if getattr(args, "roi", None) else ""
+        ax.set_title(f"FFT spectrum — {scan.source_path.name}{roi_desc}")
+        fig.tight_layout()
+        fig.savefig(str(args.output))
+        import matplotlib.pyplot as _plt
+        _plt.close(fig)
+    else:
+        log.error("Unsupported output suffix %r — use .png", suffix)
+        return 1
+    log.info("[OK] FFT spectrum → %s", args.output)
+    return 0
+
+
 def _cmd_profile(args) -> int:
     """Sample z-values along a straight segment and write a CSV / PNG / JSON."""
     setup_logging(args.verbose)
@@ -909,24 +1256,72 @@ def _cmd_profile(args) -> int:
     px_x = w_m / Nx if Nx > 0 and w_m > 0 else 1e-10
     px_y = h_m / Ny if Ny > 0 and h_m > 0 else 1e-10
 
-    # Endpoints: --p0 and --p1 in pixels, OR --p0-nm / --p1-nm in nanometres.
-    if args.p0_nm is not None and args.p1_nm is not None:
+    # Endpoints: --p0/--p1 in pixels, --p0-nm/--p1-nm in nm, OR --roi-line / --roi.
+    roi_line = getattr(args, "roi_line", None)
+    roi_name = getattr(args, "roi", None)
+
+    roi_obj = None
+    if roi_name is not None:
+        roi_obj = _load_named_roi(args.input, roi_name,
+                                  getattr(args, "sidecar", None))
+        if roi_obj is None:
+            return 1  # error already logged
+        if roi_obj.kind != "line":
+            log.error("ROI %r has kind=%r; profile requires a line ROI",
+                      roi_name, roi_obj.kind)
+            return 1
+
+    if roi_obj is not None:
+        # Check for conflicting explicit endpoints
+        if any(x is not None for x in (
+            args.p0, args.p1,
+            getattr(args, "p0_nm", None), getattr(args, "p1_nm", None),
+            roi_line,
+        )):
+            log.error("Cannot combine --roi with --p0/--p1/--roi-line")
+            return 1
+        s_m, z = _proc.line_profile(
+            arr, roi=roi_obj,
+            pixel_size_x_m=px_x, pixel_size_y_m=px_y,
+            n_samples=args.n_samples,
+            width_px=args.width,
+            interp=args.interp,
+        )
+        p0 = (roi_obj.geometry["x1"], roi_obj.geometry["y1"])
+        p1 = (roi_obj.geometry["x2"], roi_obj.geometry["y2"])
+    elif roi_line is not None:
+        x1, y1, x2, y2 = roi_line
+        p0, p1 = (x1, y1), (x2, y2)
+        s_m, z = _proc.line_profile(
+            arr, p0, p1,
+            pixel_size_x_m=px_x, pixel_size_y_m=px_y,
+            n_samples=args.n_samples,
+            width_px=args.width,
+            interp=args.interp,
+        )
+    elif getattr(args, "p0_nm", None) is not None and getattr(args, "p1_nm", None) is not None:
         p0 = (args.p0_nm[0] * 1e-9 / px_x, args.p0_nm[1] * 1e-9 / px_y)
         p1 = (args.p1_nm[0] * 1e-9 / px_x, args.p1_nm[1] * 1e-9 / px_y)
+        s_m, z = _proc.line_profile(
+            arr, p0, p1,
+            pixel_size_x_m=px_x, pixel_size_y_m=px_y,
+            n_samples=args.n_samples,
+            width_px=args.width,
+            interp=args.interp,
+        )
     elif args.p0 is not None and args.p1 is not None:
         p0 = tuple(args.p0)
         p1 = tuple(args.p1)
+        s_m, z = _proc.line_profile(
+            arr, p0, p1,
+            pixel_size_x_m=px_x, pixel_size_y_m=px_y,
+            n_samples=args.n_samples,
+            width_px=args.width,
+            interp=args.interp,
+        )
     else:
-        log.error("Provide either --p0/--p1 (px) or --p0-nm/--p1-nm")
+        log.error("Provide one of: --p0/--p1, --p0-nm/--p1-nm, --roi-line, or --roi")
         return 1
-
-    s_m, z = _proc.line_profile(
-        arr, p0, p1,
-        pixel_size_x_m=px_x, pixel_size_y_m=px_y,
-        n_samples=args.n_samples,
-        width_px=args.width,
-        interp=args.interp,
-    )
 
     if args.output is None:
         for s, zi in zip(s_m, z):
@@ -1342,11 +1737,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── processing ──
     plane_bg = sub.add_parser("plane-bg",
-        help="Subtract a polynomial plane background")
+        help="Subtract a polynomial plane background (ROI-aware)")
     _add_common_io(plane_bg, out_suffix="_bg.sxm")
     plane_bg.add_argument("--order", type=int, default=1, choices=(1, 2, 3, 4),
         help="Polynomial order (1=plane, 2=quadratic, 3=cubic, 4=quartic)")
-    plane_bg.set_defaults(func=lambda a: _cmd_single_op(a, _op_plane_bg(a.order)))
+    plane_bg.add_argument("--step-tolerance", action="store_true",
+        help="Exclude step-edge pixels from the polynomial fit")
+    # Fit ROI
+    plane_bg.add_argument("--fit-roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Fit background to pixels within this persisted ROI only")
+    plane_bg.add_argument("--fit-roi-rect", type=float, nargs=4,
+        metavar=("X0", "Y0", "X1", "Y1"),
+        help="Inline rectangular fit-ROI (pixel coordinates)")
+    plane_bg.add_argument("--fit-roi-invert", type=str, default=None, metavar="NAME_OR_ID",
+        help="Fit background to the complement of the named ROI")
+    plane_bg.add_argument("--fit-roi-union", type=str, default=None, metavar="NAME[,NAME,...]",
+        help="Fit background to the union of the named ROIs (comma-separated)")
+    # Apply ROI
+    plane_bg.add_argument("--apply-roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Apply the fitted background only within this persisted ROI")
+    plane_bg.add_argument("--apply-roi-rect", type=float, nargs=4,
+        metavar=("X0", "Y0", "X1", "Y1"),
+        help="Inline rectangular apply-ROI (pixel coordinates)")
+    # Exclude ROI
+    plane_bg.add_argument("--exclude-roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Exclude this persisted ROI from the polynomial fit")
+    plane_bg.add_argument("--exclude-roi-rect", type=float, nargs=4,
+        metavar=("X0", "Y0", "X1", "Y1"),
+        help="Inline rectangular region to exclude from the fit")
+    # Sidecar for named ROI lookup
+    plane_bg.add_argument("--sidecar", type=Path, default=None,
+        help="Explicit .provenance.json path (default: <input>.provenance.json)")
+    plane_bg.set_defaults(func=_cmd_plane_bg)
 
     align = sub.add_parser("align-rows",
         help="Fix per-row offsets (median / mean / linear)")
@@ -1590,8 +2012,64 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Perpendicular swath width in pixels (averages across; default 1)")
     profile.add_argument("--interp", choices=("linear", "nearest"),
         default="linear")
+    profile.add_argument("--roi-line", type=float, nargs=4,
+        metavar=("X1", "Y1", "X2", "Y2"),
+        help="Line ROI as pixel coordinates (alternative to --p0/--p1)")
+    profile.add_argument("--roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Use a persisted line ROI from the scan sidecar by name or UUID")
     profile.add_argument("--verbose", action="store_true")
     profile.set_defaults(func=_cmd_profile)
+
+    # ── ROI-aware histogram ──
+    hist = sub.add_parser("histogram",
+        help="Pixel-value histogram (optionally restricted to an ROI)")
+    hist.add_argument("input", type=Path)
+    hist.add_argument("-o", "--output", type=Path, default=None,
+        help="Output: .csv for (counts, edges) table, .png for a plot. "
+             "Omit for tab-separated stdout.")
+    hist.add_argument("--plane", type=int, default=0)
+    hist.add_argument("--bins", type=int, default=256,
+        help="Number of histogram bins (default 256)")
+    hist.add_argument("--roi-rect", type=float, nargs=4,
+        metavar=("X0", "Y0", "X1", "Y1"),
+        help="Rectangular ROI as pixel coordinates (x0 y0 x1 y1)")
+    hist.add_argument("--roi-polygon", type=float, nargs="+",
+        metavar="X Y",
+        help="Polygon ROI as alternating x y pixel coordinates (at least 3 vertices)")
+    hist.add_argument("--roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Use a persisted ROI from the scan sidecar by name or UUID")
+    hist.add_argument("--sidecar", type=Path, default=None,
+        help="Explicit sidecar .json path (default: <input>.provenance.json)")
+    hist.add_argument("--verbose", action="store_true")
+    hist.set_defaults(func=_cmd_histogram)
+
+    # ── ROI-aware FFT magnitude spectrum ──
+    fft_spec = sub.add_parser("fft-spectrum",
+        help="2-D FFT magnitude spectrum of a scan plane or ROI")
+    fft_spec.add_argument("input", type=Path)
+    fft_spec.add_argument("-o", "--output", type=Path, default=None,
+        help="Output PNG for the magnitude image. Omit to print peak summary.")
+    fft_spec.add_argument("--plane", type=int, default=0)
+    fft_spec.add_argument("--window",
+        choices=("hann", "tukey", "none"), default="hann",
+        help="Spatial window applied before the DFT (default: hann)")
+    fft_spec.add_argument("--window-param", type=float, default=0.25,
+        help="Tukey plateau fraction [0,1] (ignored for other windows)")
+    fft_spec.add_argument("--no-log", dest="log_scale", action="store_false",
+        help="Disable log1p scaling of the magnitude (linear output)")
+    fft_spec.add_argument("--roi-rect", type=float, nargs=4,
+        metavar=("X0", "Y0", "X1", "Y1"),
+        help="Rectangular ROI as pixel coordinates")
+    fft_spec.add_argument("--roi-polygon", type=float, nargs="+",
+        metavar="X Y",
+        help="Polygon ROI as alternating x y pixel coordinates (≥3 vertices)")
+    fft_spec.add_argument("--roi", type=str, default=None, metavar="NAME_OR_ID",
+        help="Use a persisted ROI from the scan sidecar by name or UUID")
+    fft_spec.add_argument("--sidecar", type=Path, default=None,
+        help="Explicit sidecar .json path (default: <input>.provenance.json)")
+    fft_spec.add_argument("--colormap", default="gray")
+    fft_spec.add_argument("--verbose", action="store_true")
+    fft_spec.set_defaults(func=_cmd_fft_spectrum)
 
     # ── unit-cell averaging ──
     ucell = sub.add_parser("unit-cell",
