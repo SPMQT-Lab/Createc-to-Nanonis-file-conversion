@@ -249,6 +249,7 @@ class LineProfilePanel(QWidget):
         self._y_vals = None
         self._x_label = ""
         self._y_label = ""
+        self._source_label = ""
         self.show_empty()
 
     def profile_data(self):
@@ -276,6 +277,7 @@ class LineProfilePanel(QWidget):
         self._canvas.draw_idle()
         self._x_vals = None
         self._y_vals = None
+        self._source_label = ""
         self._export_btn.setEnabled(False)
 
     def plot_profile(self, x_vals, values, *, x_label: str = "Distance [nm]",
@@ -300,7 +302,19 @@ class LineProfilePanel(QWidget):
         self._y_vals = values
         self._x_label = x_label
         self._y_label = y_label
+        self._source_label = ""
         self._export_btn.setEnabled(True)
+
+    def set_source_label(self, source_label: str | None,
+                         theme: Optional[dict] = None) -> None:
+        """Show the ROI or selection that produced the current profile."""
+        if self._x_vals is None:
+            return
+        self._source_label = str(source_label or "")
+        fg = (theme or {}).get("fg", "#cdd6f4")
+        self._ax.set_title(self._source_label, fontsize=8, color=fg)
+        self._fig.tight_layout(pad=0.35)
+        self._canvas.draw_idle()
 
 
 # ── Full-size image viewer dialog ─────────────────────────────────────────────

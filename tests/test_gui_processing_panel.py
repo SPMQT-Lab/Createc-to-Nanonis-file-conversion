@@ -368,6 +368,97 @@ def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
     assert y_label == "Test channel [V]"
 
 
+def test_viewer_active_line_roi_detection(qapp):
+    from probeflow.core.roi import ROI, ROISet
+    from probeflow.gui import ImageViewerDialog
+
+    roi_set = ROISet(image_id="img1")
+    rect = ROI.new("rectangle", {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0})
+    line = ROI.new("line", {"x1": 0.0, "y1": 1.0, "x2": 4.0, "y2": 1.0})
+    roi_set.add(rect)
+    roi_set.add(line)
+
+    dlg = ImageViewerDialog.__new__(ImageViewerDialog)
+    dlg._image_roi_set = roi_set
+
+    roi_set.set_active(line.id)
+    assert dlg._active_line_roi_id() == line.id
+
+    roi_set.set_active(rect.id)
+    assert dlg._active_line_roi_id() is None
+
+
+def test_viewer_line_profile_sync_clears_for_non_line_active_roi(qapp):
+    from probeflow.core.roi import ROI, ROISet
+    from probeflow.gui import ImageViewerDialog
+
+    class FakePanel:
+        def __init__(self):
+            self.visible = None
+            self.empty = None
+
+        def setVisible(self, visible):
+            self.visible = visible
+
+        def show_empty(self, message="Draw a line to show profile.", theme=None):
+            self.empty = message
+
+    class FakeZoom:
+        def selection_tool(self):
+            return "pan"
+
+    roi_set = ROISet(image_id="img1")
+    rect = ROI.new("rectangle", {"x": 1.0, "y": 2.0, "width": 3.0, "height": 4.0})
+    roi_set.add(rect)
+    roi_set.set_active(rect.id)
+
+    dlg = ImageViewerDialog.__new__(ImageViewerDialog)
+    dlg._image_roi_set = roi_set
+    dlg._line_profile_panel = FakePanel()
+    dlg._zoom_lbl = FakeZoom()
+    dlg._line_profile_geometry = {"kind": "line", "points_px": [(0, 0), (1, 1)]}
+    dlg._t = {}
+
+    dlg._sync_line_profile_visibility()
+
+    assert dlg._line_profile_panel.visible is False
+    assert dlg._line_profile_panel.empty == "Draw a line to show profile."
+    assert dlg._line_profile_geometry is None
+
+
+def test_viewer_line_profile_sync_uses_active_line_roi(qapp):
+    from probeflow.core.roi import ROI, ROISet
+    from probeflow.gui import ImageViewerDialog
+
+    class FakePanel:
+        def __init__(self):
+            self.visible = None
+
+        def setVisible(self, visible):
+            self.visible = visible
+
+    class FakeZoom:
+        def selection_tool(self):
+            return "pan"
+
+    roi_set = ROISet(image_id="img1")
+    line = ROI.new("line", {"x1": 0.0, "y1": 1.0, "x2": 4.0, "y2": 1.0})
+    roi_set.add(line)
+    roi_set.set_active(line.id)
+
+    dlg = ImageViewerDialog.__new__(ImageViewerDialog)
+    dlg._image_roi_set = roi_set
+    dlg._line_profile_panel = FakePanel()
+    dlg._zoom_lbl = FakeZoom()
+    called = []
+    dlg._on_roi_line_profile = lambda roi_id: called.append(roi_id)
+
+    dlg._sync_line_profile_visibility()
+
+    assert dlg._line_profile_panel.visible is True
+    assert called == [line.id]
+
+
 def test_viewer_dialog_initializes_panel_from_thumbnail_processing(qapp, monkeypatch):
     from probeflow.gui import ImageViewerDialog, ProcessingControlPanel, SxmFile
 

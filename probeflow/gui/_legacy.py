@@ -2410,11 +2410,13 @@ class ImageViewerDialog(QDialog):
 
     def _on_roi_canvas_context_menu(self, roi_id: str, global_pos) -> None:
         """Right-click on a ROI in the canvas — show a small ROI action menu."""
-        from PySide6.QtWidgets import QMenu, QInputDialog
+        from PySide6.QtWidgets import QMenu
         roi_set = self._image_roi_set
         roi = roi_set.get(roi_id) if roi_set else None
         if roi is None:
             return
+        is_area = roi.kind in {"rectangle", "ellipse", "polygon", "freehand", "multipolygon"}
+        is_line = roi.kind == "line"
         menu = QMenu(self)
         act_active = menu.addAction("Set Active")
         act_active.triggered.connect(lambda: self._set_active_image_roi(roi_id))
@@ -2423,7 +2425,24 @@ class ImageViewerDialog(QDialog):
         act_delete = menu.addAction("Delete")
         act_delete.triggered.connect(lambda: self._delete_image_roi(roi_id))
         act_invert = menu.addAction("Invert")
+        act_invert.setEnabled(is_area)
         act_invert.triggered.connect(lambda: self._invert_image_roi(roi_id))
+        menu.addSeparator()
+        act_bg_fit = menu.addAction("Background subtract (fit region)")
+        act_bg_fit.setEnabled(is_area)
+        act_bg_fit.triggered.connect(lambda: self._on_roi_bg_subtract_fit(roi_id))
+        act_bg_exclude = menu.addAction("Background subtract (exclude region)")
+        act_bg_exclude.setEnabled(is_area)
+        act_bg_exclude.triggered.connect(lambda: self._on_roi_bg_subtract_exclude(roi_id))
+        act_fft = menu.addAction("FFT this region")
+        act_fft.setEnabled(is_area)
+        act_fft.triggered.connect(lambda: self._on_roi_fft(roi_id))
+        act_hist = menu.addAction("Histogram of this region")
+        act_hist.setEnabled(is_area)
+        act_hist.triggered.connect(lambda: self._on_roi_histogram(roi_id))
+        act_profile = menu.addAction("Line profile")
+        act_profile.setEnabled(is_line)
+        act_profile.triggered.connect(lambda: self._on_roi_line_profile(roi_id))
         menu.exec(global_pos)
 
     # ── ROI helper actions ────────────────────────────────────────────────────
@@ -2558,6 +2577,11 @@ class ImageViewerDialog(QDialog):
                 y_label=f"{name} [{unit}]" if unit else name,
                 theme=self._t,
             )
+            if hasattr(self._line_profile_panel, "set_source_label"):
+                self._line_profile_panel.set_source_label(
+                    f"Line ROI: {roi.name} ({roi.id[:8]})",
+                    theme=self._t,
+                )
         except Exception as exc:
             self._line_profile_panel.show_empty(str(exc), theme=self._t)
 
@@ -2833,6 +2857,8 @@ class ImageViewerDialog(QDialog):
                 y_label=y_label,
                 theme=self._t,
             )
+            if hasattr(self._line_profile_panel, "set_source_label"):
+                self._line_profile_panel.set_source_label(None, theme=self._t)
         except Exception as exc:
             self._line_profile_panel.show_empty(
                 f"Profile unavailable: {exc}",

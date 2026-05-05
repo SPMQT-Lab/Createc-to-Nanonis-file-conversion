@@ -13,6 +13,7 @@ from probeflow.core.roi import (
     combine_masks,
     invert_mask,
     roi_from_legacy_geometry_dict,
+    translate,
 )
 from probeflow.processing.state import apply_processing_state, ProcessingState, ProcessingStep
 
@@ -34,6 +35,10 @@ def ellipse_roi(cx=50, cy=50, rx=10, ry=10):
 
 def polygon_roi():
     return ROI.new("polygon", {"vertices": [[10.0, 10.0], [30.0, 10.0], [20.0, 30.0]]})
+
+
+def freehand_roi():
+    return ROI.new("freehand", {"vertices": [[1.0, 2.0], [3.0, 5.0], [8.0, 13.0]]})
 
 
 def line_roi():
@@ -377,6 +382,91 @@ class TestROISetTransformAll:
         rs.add(roi)
         rs.transform_all("flip_horizontal", {}, (100, 100))
         assert abs(rs.rois[0].geometry["x"] - 70.0) < 1e-9
+
+
+class TestROITranslate:
+    def test_line_translation_updates_both_endpoints(self):
+        roi = line_roi()
+        moved = translate(roi, 2.5, -1.5)
+        assert moved.geometry == {
+            "x1": 7.5, "y1": 3.5,
+            "x2": 17.5, "y2": 13.5,
+        }
+
+    def test_rectangle_translation_shifts_origin(self):
+        moved = translate(rect_roi(x=10, y=20, w=30, h=40), -3.0, 4.0)
+        assert moved.geometry["x"] == pytest.approx(7.0)
+        assert moved.geometry["y"] == pytest.approx(24.0)
+        assert moved.geometry["width"] == pytest.approx(30.0)
+        assert moved.geometry["height"] == pytest.approx(40.0)
+
+    def test_ellipse_translation_shifts_center(self):
+        moved = translate(ellipse_roi(cx=12, cy=24, rx=5, ry=6), 10.0, -2.0)
+        assert moved.geometry["cx"] == pytest.approx(22.0)
+        assert moved.geometry["cy"] == pytest.approx(22.0)
+        assert moved.geometry["rx"] == pytest.approx(5.0)
+        assert moved.geometry["ry"] == pytest.approx(6.0)
+
+    def test_polygon_translation_shifts_all_vertices(self):
+        moved = translate(polygon_roi(), 1.0, 2.0)
+        assert moved.geometry["vertices"] == [
+            [11.0, 12.0],
+            [31.0, 12.0],
+            [21.0, 32.0],
+        ]
+
+    def test_freehand_translation_shifts_all_vertices(self):
+        moved = translate(freehand_roi(), -1.0, 3.0)
+        assert moved.geometry["vertices"] == [
+            [0.0, 5.0],
+            [2.0, 8.0],
+            [7.0, 16.0],
+        ]
+
+    def test_point_translation_shifts_point(self):
+        moved = translate(point_roi(x=4, y=9), 0.5, -2.5)
+        assert moved.geometry["x"] == pytest.approx(4.5)
+        assert moved.geometry["y"] == pytest.approx(6.5)
+
+    def test_translation_preserves_roi_identity_fields(self):
+        roi = ROI.new(
+            "point",
+            {"x": 4.0, "y": 9.0},
+            name="probe_site",
+            linked_file="scan_001.sxm",
+        )
+        roi.coord_system = "physical"
+        moved = translate(roi, 1.0, 1.0)
+        assert moved.id == roi.id
+        assert moved.name == "probe_site"
+        assert moved.kind == "point"
+        assert moved.coord_system == "physical"
+        assert moved.linked_file == "scan_001.sxm"
+
+    def test_roi_set_active_roi_survives_translate_update(self):
+        rs = ROISet(image_id="img1")
+        roi = rect_roi()
+        rs.add(roi)
+        rs.set_active(roi.id)
+        moved = translate(roi, 5.0, 6.0)
+        rs.remove(roi.id)
+        rs.add(moved)
+        rs.set_active(moved.id)
+        assert rs.active_roi_id == roi.id
+        assert rs.get(roi.id).geometry["x"] == pytest.approx(15.0)
+
+    def test_removing_active_roi_clears_active_id(self):
+        rs = ROISet(image_id="img1")
+        roi = rect_roi()
+        other = point_roi()
+        rs.add(roi)
+        rs.add(other)
+        rs.set_active(roi.id)
+        rs.remove(roi.id)
+        # Current ROISet policy is conservative: deletion clears active selection
+        # instead of auto-selecting a neighbor.
+        assert rs.active_roi_id is None
+        assert rs.get(other.id) is other
 
 
 # ── Mask helpers ──────────────────────────────────────────────────────────────
