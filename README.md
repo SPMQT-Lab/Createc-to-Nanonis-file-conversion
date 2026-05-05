@@ -626,6 +626,12 @@ Applies a derivative-based edge-detection kernel.  Useful for visualising atomic
 
 ---
 
+## License
+
+ProbeFlow is released under the [MIT License](LICENSE). You are free to use,
+modify, and redistribute it for any purpose, including commercially, as long
+as the copyright notice is preserved.
+
 ## Acknowledgements
 
 **ProbeFlow** is developed at **[SPMQT-Lab](https://github.com/SPMQT-Lab)**, under the supervision of **Dr. Peter Jacobson** at **The University of Queensland**.
