@@ -17,6 +17,7 @@ here — those belong in `io/`, `processing/`, `analysis/`, `core/`, or
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import re as _re
@@ -40,8 +41,8 @@ from PySide6.QtCore import (
     QSize, Signal, Slot,
 )
 from PySide6.QtGui import (
-    QAction, QBrush, QColor, QCursor, QFont, QImage, QMovie, QPainter, QPen,
-    QPixmap, QResizeEvent, QWheelEvent,
+    QAction, QBrush, QColor, QCursor, QFont, QImage, QKeySequence, QMovie,
+    QPainter, QPen, QPixmap, QResizeEvent, QShortcut, QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox,
@@ -1368,6 +1369,14 @@ class ImageViewerDialog(QDialog):
         self._clip_high  = clip_high
         self._drs        = DisplayRangeState(low_pct=clip_low, high_pct=clip_high)
         self._processing = dict(processing) if processing else {}
+        # Undo / redo stacks for processing state. Each entry is a deep copy
+        # of the full processing dict at a prior point. Apply / Reset push
+        # the previous state onto _undo_stack and clear _redo_stack; the
+        # Undo / Redo buttons swap between the two.
+        self._proc_undo_stack: list[dict] = []
+        self._proc_redo_stack: list[dict] = []
+        self._proc_undo_btn = None
+        self._proc_redo_btn = None
         # Mutable mapping shared with the parent window: spec_stem → image_stem.
         # Empty dict by default — markers only appear after explicit mapping.
         self._spec_image_map = spec_image_map if spec_image_map is not None else {}
@@ -1729,6 +1738,34 @@ class ImageViewerDialog(QDialog):
         ar_row.addWidget(proc_apply_btn, 2)
         ar_row.addWidget(proc_reset_btn, 1)
         right_lay.addLayout(ar_row)
+
+        # ── Undo / Redo — restore previous processing snapshots ───────────────
+        ur_row = QHBoxLayout()
+        ur_row.setSpacing(4)
+        self._proc_undo_btn = QPushButton("↶ Undo")
+        self._proc_undo_btn.setFont(QFont("Helvetica", 8))
+        self._proc_undo_btn.setFixedHeight(24)
+        self._proc_undo_btn.setToolTip(
+            "Restore the processing state from before the last Apply / Reset "
+            "(Ctrl+Z).")
+        self._proc_undo_btn.clicked.connect(self._on_undo_processing)
+        self._proc_redo_btn = QPushButton("Redo ↷")
+        self._proc_redo_btn.setFont(QFont("Helvetica", 8))
+        self._proc_redo_btn.setFixedHeight(24)
+        self._proc_redo_btn.setToolTip(
+            "Reapply a state that was just undone (Ctrl+Y or Ctrl+Shift+Z).")
+        self._proc_redo_btn.clicked.connect(self._on_redo_processing)
+        ur_row.addWidget(self._proc_undo_btn, 1)
+        ur_row.addWidget(self._proc_redo_btn, 1)
+        right_lay.addLayout(ur_row)
+        self._update_undo_redo_buttons()
+
+        QShortcut(QKeySequence("Ctrl+Z"), self,
+                  activated=self._on_undo_processing)
+        QShortcut(QKeySequence("Ctrl+Y"), self,
+                  activated=self._on_redo_processing)
+        QShortcut(QKeySequence("Ctrl+Shift+Z"), self,
+                  activated=self._on_redo_processing)
 
         right_lay.addWidget(_sep())
 
@@ -2822,6 +2859,9 @@ class ImageViewerDialog(QDialog):
             if selection_geometry is None:
                 self._status_lbl.setText("Select an area before using selection-based processing.")
                 return
+        # Snapshot for undo before any mutation. Validation has passed; this
+        # apply is going to change the state.
+        self._push_proc_undo_snapshot()
         preserve = {
             key: self._processing[key]
             for key in (
@@ -2880,6 +2920,8 @@ class ImageViewerDialog(QDialog):
         if not self._processing and not has_selection and not has_zero:
             self._status_lbl.setText("Already showing the original — nothing to reset.")
             return
+        # Snapshot for undo before clearing.
+        self._push_proc_undo_snapshot()
         self._processing = {}
         self._processing_panel.set_state({})
         self._set_advanced_processing_state({})
@@ -2899,6 +2941,54 @@ class ImageViewerDialog(QDialog):
         self._refresh_zero_markers()
         self._status_lbl.setText("Reset: showing original on-disk data.")
         self._refresh_processing_display()
+
+    # ── Processing undo / redo ────────────────────────────────────────────────
+
+    _PROC_UNDO_DEPTH = 50
+
+    def _push_proc_undo_snapshot(self) -> None:
+        """Record the current processing state for Undo, then clear redo.
+
+        Called by Apply / Reset (after their validation passes) before any
+        mutation of ``self._processing``. The snapshot is a deep copy so
+        nested ROI / geometry dicts don't alias the live state.
+        """
+        self._proc_undo_stack.append(copy.deepcopy(self._processing))
+        if len(self._proc_undo_stack) > self._PROC_UNDO_DEPTH:
+            self._proc_undo_stack.pop(0)
+        self._proc_redo_stack.clear()
+        self._update_undo_redo_buttons()
+
+    def _restore_processing_state(self, state: dict) -> None:
+        """Apply a snapshot to ``self._processing`` and resync the GUI."""
+        self._processing = copy.deepcopy(state)
+        self._processing_panel.set_state(self._processing)
+        self._set_advanced_processing_state(self._processing)
+        self._refresh_processing_display()
+
+    def _on_undo_processing(self) -> None:
+        if not self._proc_undo_stack:
+            return
+        self._proc_redo_stack.append(copy.deepcopy(self._processing))
+        previous = self._proc_undo_stack.pop()
+        self._restore_processing_state(previous)
+        self._status_lbl.setText("Undo: restored previous processing.")
+        self._update_undo_redo_buttons()
+
+    def _on_redo_processing(self) -> None:
+        if not self._proc_redo_stack:
+            return
+        self._proc_undo_stack.append(copy.deepcopy(self._processing))
+        target = self._proc_redo_stack.pop()
+        self._restore_processing_state(target)
+        self._status_lbl.setText("Redo: reapplied processing.")
+        self._update_undo_redo_buttons()
+
+    def _update_undo_redo_buttons(self) -> None:
+        if self._proc_undo_btn is not None:
+            self._proc_undo_btn.setEnabled(bool(self._proc_undo_stack))
+        if self._proc_redo_btn is not None:
+            self._proc_redo_btn.setEnabled(bool(self._proc_redo_stack))
 
     def _on_save_png(self):
         entry = self._entries[self._idx]
