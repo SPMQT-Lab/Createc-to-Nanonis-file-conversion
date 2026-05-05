@@ -1,10 +1,21 @@
-"""ProbeFlow — PySide6 GUI for STM scan browsing, processing, and Createc→Nanonis conversion."""
+"""ProbeFlow — PySide6 GUI for STM scan browsing, processing, and Createc→Nanonis conversion.
+
+NOTE — this is the working GUI implementation, not deprecated code.
+The `_legacy` suffix reflects an in-progress refactor: classes will be
+moved out of this file into dedicated submodules (`gui/dialogs/`,
+`gui/viewer/`, `gui/browse/`, `gui/convert/`, `gui/features/`,
+`gui/terminal/`) opportunistically as features touch them. Until that
+work completes, the bulk of the GUI lives here. New widgets / dialogs
+should still go in their proper subpackage; only edits to existing
+classes belong in this file.
+
+Boundary rules: do not add parsers, writers, numerical kernels,
+analysis algorithms, model definitions, or graph-node dataclasses
+here — those belong in `io/`, `processing/`, `analysis/`, `core/`, or
+`provenance/` respectively.
+"""
 
 from __future__ import annotations
-
-# Layout cleanup note: this module is a compatibility parking area while the
-# remaining Qt classes are moved into dedicated gui/* modules. New parser,
-# writer, processing, analysis, plugin, and graph-node code belongs elsewhere.
 
 import io
 import json

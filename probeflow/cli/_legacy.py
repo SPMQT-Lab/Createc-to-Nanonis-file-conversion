@@ -1,6 +1,14 @@
 """
 ProbeFlow unified command-line interface.
 
+NOTE — this is the working CLI implementation, not deprecated code.
+The `_legacy` suffix reflects an in-progress refactor: command parsers
+and runners will be moved out of this file into `cli/commands/` and
+`cli/parser.py` opportunistically as commands are touched. Until that
+work completes, the bulk of the CLI lives here. New commands should be
+added in their proper submodule under `cli/commands/`; only edits to
+existing parsers belong in this file.
+
 Every GUI processing capability is available from the shell so that
 pipelines can be scripted:
 

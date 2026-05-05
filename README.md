@@ -179,6 +179,9 @@ Each of these reads a scan (`.sxm` or `.dat` — auto-detected), applies a singl
 | `smooth`           | Isotropic Gaussian smoothing (`--sigma` in pixels)                |
 | `edge`             | Laplacian / LoG / DoG edge detection                              |
 | `fft`              | 2-D FFT low-pass or high-pass filter                              |
+| `flip-h` / `flip-v` | Lossless horizontal / vertical flip                              |
+| `rotate-90` / `rotate-180` / `rotate-270` | Lossless 90° rotations                       |
+| `rotate`           | Arbitrary-angle rotation (bilinear, canvas-expanding)             |
 
 Common options across the processing commands:
 
@@ -195,13 +198,16 @@ Common options across the processing commands:
 
 ### Analysis / inspection
 
-| Command       | Purpose                                                               |
-|---------------|-----------------------------------------------------------------------|
-| `grains`      | Detect islands or depressions and print per-grain area / centroid     |
-| `autoclip`    | Suggest GMM-based clip percentiles for display                        |
-| `periodicity` | Find dominant spatial periods via the power spectrum                  |
-| `info`        | Print header metadata (`--json` for machine-readable output)          |
-| `profile`     | Sample z along a line (CSV / JSON / PNG; supports nm and px endpoints, swath averaging) |
+| Command        | Purpose                                                               |
+|----------------|-----------------------------------------------------------------------|
+| `grains`       | Detect islands or depressions and print per-grain area / centroid     |
+| `autoclip`     | Suggest GMM-based clip percentiles for display                        |
+| `periodicity`  | Find dominant spatial periods via the power spectrum                  |
+| `info`         | Print header metadata (`--json` for machine-readable output)          |
+| `profile`      | Sample z along a line (CSV / JSON / PNG; nm and px endpoints, swath averaging) |
+| `histogram`    | Pixel-value histogram of a selected plane (CSV / PNG; ROI-aware)      |
+| `fft-spectrum` | 2-D FFT magnitude spectrum of a plane or ROI (PNG; with peak summary) |
+| `diag-z`       | Diagnostic dump for Z-scale calibration (Createc gain factor model)   |
 
 ### Feature detection (requires `probeflow[features]`)
 
@@ -324,13 +330,16 @@ ax = plot_spectra(specs, channel="Z", offset=5e-10)
 probeflow gui
 ```
 
-Three tabs:
+Six tabs:
 
-* **Browse** — point at a folder; the grid auto-detects supported Createc/Nanonis scan and spectroscopy files and renders thumbnails. An *All / Images / Spectra* toggle filters the visible cards. The full-size viewer has an interactive histogram with Auto percentile contrast and manual red/green display-limit bars, similar in spirit to ImageJ brightness/contrast controls. PNG export uses the same display limits as the viewer and writes provenance when available.
+* **Browse** — point at a folder; the grid auto-detects supported Createc/Nanonis scan and spectroscopy files and renders thumbnails. An *All / Images / Spectra* toggle filters the visible cards. The full-size viewer has an interactive histogram with Auto percentile contrast and manual red/green display-limit bars, similar in spirit to ImageJ brightness/contrast controls. The viewer supports rectangle / ellipse / polygon / freehand ROI tools, geometric transforms (flip, rotate), live line profiles, and a side-by-side FFT viewer dialog. PNG export uses the same display limits as the viewer and writes provenance when available.
 * **Convert** — folder-in / folder-out batch dat→sxm and dat→png with PNG / SXM checkboxes and clip-percentile controls.
-* **Features** — load the currently-selected Browse scan, choose a mode (*Particles* / *Template* / *Lattice*), tune parameters, hit *Run*. Results overlay on the canvas (contours, detection markers, primitive vectors + unit cell) and populate a sortable table. *Export JSON…* writes results with full scan provenance via `probeflow.io.writers.json`. Heavy analyses run on a background thread so the UI stays responsive.
+* **FeatureCounting** — load the currently-selected Browse scan, choose a mode (*Particles* / *Template* / *Lattice*), tune parameters, hit *Run*. Results overlay on the canvas (contours, detection markers, primitive vectors + unit cell) and populate a sortable table. *Export JSON…* writes results with full scan provenance via `probeflow.io.writers.json`. Heavy analyses run on a background thread so the UI stays responsive.
+* **TV-denoise** — dedicated panel for total-variation denoising (Chambolle–Pock `huber_rof` / `tv_l1`) with axis-selective gradient for line-noise scratches.
+* **Dev** — embedded developer terminal (PySide6 `QProcess`) for quick shell access without leaving the GUI; auto-redirects PTY tools (`vim`, `ipython`, `claude`, …) to an external terminal.
+* **Defs** — algorithm reference panel summarising the processing operations and their parameters.
 
-Preferences (folders, theme, clip values) are saved to `~/.probeflow_config.json`.
+Preferences (folders, theme, clip values, font size) are saved to `~/.probeflow_config.json`.
 
 ---
 
@@ -430,29 +439,28 @@ dzdv = numeric_derivative(spec.x_array, z_smooth)
 ```
 probeflow/              # installable package
 |-- __init__.py
-|-- core/               # Scan model/loading, metadata, indexing, validation
+|-- core/               # Scan model, loaders, metadata, indexing, ROI, validation
 |-- io/                 # file sniffing, readers, writers, .sxm layout, converters
-|-- processing/         # GUI-free image/display/spectroscopy processing
+|-- processing/         # GUI-free image/display/spectroscopy processing + ProcessingState
 |-- analysis/           # particles, lattice, spectroscopy plotting, xmgrace export
-|-- provenance/         # export provenance now; graph provenance later
-|-- gui/                # PySide6 GUI package and future panel/dialog subpackages
+|-- provenance/         # export provenance now; scan-graph provenance later
+|-- gui/                # PySide6 GUI package
 |-- cli/                # unified "probeflow" command package
-|-- plugins/            # future plugin API, registry, manifests, adapters
-|-- scan.py             # compatibility shim for core.scan_loader
-|-- processing_state.py # compatibility shim for processing.state
-|-- readers/            # compatibility shims for io.readers
-|-- writers/            # compatibility shims for io.writers
-|-- dat_sxm.py          # compatibility shim for io.converters.createc_dat_to_sxm
-`-- dat_png.py          # compatibility shim for io.converters.createc_dat_to_png
+`-- plugins/            # future plugin API, registry, manifests, adapters
 
 src/file_cushions/      # binary layout captured from a reference .sxm file
 data/                   # sample input / output for manual runs + tests
 tests/                  # pytest suite (conversion, processing, .sxm round-trip,
-                        #               spectroscopy reader + processing)
+                        #               spectroscopy reader + processing,
+                        #               ROI, geometric ops, layout compatibility)
 assets/                 # logo artwork
 ```
 
 The `src/file_cushions/` directory holds the byte-level layout used to reconstruct `.sxm` files (header padding, `:SCANIT_END:` marker position, tail bytes, fixed data offset). These were reverse-engineered once from a reference Nanonis file and should be regenerated only if a future Nanonis version shifts the binary layout.
+
+### Current state vs roadmap
+
+The directory tree above reflects the *intended* decomposition. In practice, the bulk of the GUI implementation still lives in `probeflow/gui/_legacy.py` (~6,200 LoC) and the CLI in `probeflow/cli/_legacy.py` (~2,200 LoC); the other modules in those packages are mostly thin re-exports today. The provenance graph (`probeflow/provenance/graph.py`) and plugin registry (`probeflow/plugins/`) are scaffolded but not yet implemented — see [`roadmap_architecture_proposal.md`](roadmap_architecture_proposal.md) for the architectural target. Decomposition is happening opportunistically; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
