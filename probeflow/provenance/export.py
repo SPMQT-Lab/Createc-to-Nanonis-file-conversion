@@ -198,13 +198,8 @@ def processing_state_from_history(history: list[dict[str, Any]] | None) -> dict[
     Timestamps are intentionally omitted from the canonical processing state;
     they describe when a step was applied, not what numerical operation it is.
     """
-    steps = []
-    for entry in history or []:
-        op = entry.get("op")
-        if not op:
-            continue
-        steps.append({"op": str(op), "params": dict(entry.get("params", {}))})
-    return {"steps": steps}
+    from probeflow.processing.history import processing_state_dict_from_history
+    return processing_state_dict_from_history(history)
 
 
 def background_processing_warnings(processing_state: dict[str, Any]) -> tuple[str, ...]:
@@ -233,7 +228,11 @@ def build_scan_export_provenance(
 ) -> ExportProvenance:
     """Shared provenance constructor for GUI, CLI, writers, and handoffs."""
     if processing_state is None:
-        ps_dict = processing_state_from_history(getattr(scan, "processing_history", []))
+        scan_state = getattr(scan, "processing_state", None)
+        if scan_state is not None and hasattr(scan_state, "to_dict"):
+            ps_dict = scan_state.to_dict()
+        else:
+            ps_dict = processing_state_from_history(getattr(scan, "processing_history", []))
     elif hasattr(processing_state, "to_dict"):
         ps_dict = processing_state.to_dict()
     else:

@@ -63,7 +63,6 @@ from PIL import Image
 
 from probeflow import processing as _proc
 from probeflow.io.common import setup_logging
-from probeflow.processing.gui_adapter import processing_history_entries_from_state
 from probeflow.processing.state import ProcessingState, ProcessingStep
 from probeflow.core.scan_loader import load_scan
 from probeflow.core.scan_model import Scan
@@ -116,9 +115,9 @@ class _Op:
 
 
 def _record_op(scan: "Scan", name: str, params: dict) -> None:
-    """Append one history entry to *scan.processing_history*."""
+    """Record one canonical processing step on *scan*."""
     state = ProcessingState(steps=[ProcessingStep(name, dict(params))])
-    scan.processing_history.extend(processing_history_entries_from_state(state))
+    scan.record_processing_state(state)
 
 
 # ─── Shared argument helpers ─────────────────────────────────────────────────
@@ -578,10 +577,9 @@ def _cmd_prepare_png(args) -> int:
 
     state = _processing_state_from_ops(ops)
     if state.steps:
-        from probeflow.processing.gui_adapter import processing_history_entries_from_state
         from probeflow.processing.state import apply_processing_state
         scan.planes[args.plane] = apply_processing_state(scan.planes[args.plane], state)
-        scan.processing_history.extend(processing_history_entries_from_state(state))
+        scan.record_processing_state(state)
 
     from probeflow.provenance.prepared_export import write_prepared_png
     write_prepared_png(

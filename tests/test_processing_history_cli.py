@@ -122,6 +122,8 @@ class TestRecordOp:
         assert entry["op"] == "plane_bg"
         assert entry["params"] == {"order": 1}
         assert "timestamp" in entry
+        assert [step.op for step in scan.processing_state.steps] == ["plane_bg"]
+        assert scan.processing_state.steps[0].params == {"order": 1}
 
     def test_timestamp_is_iso_string(self):
         from datetime import datetime
@@ -137,6 +139,10 @@ class TestRecordOp:
         assert len(scan.processing_history) == 2
         assert scan.processing_history[0]["op"] == "align_rows"
         assert scan.processing_history[1]["op"] == "plane_bg"
+        assert [step.op for step in scan.processing_state.steps] == [
+            "align_rows",
+            "plane_bg",
+        ]
 
 
 # ─── _apply_to_plane with _Op ─────────────────────────────────────────────────

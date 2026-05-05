@@ -26,7 +26,35 @@ PLANE_CANON_NAMES: tuple[str, ...] = (
 PLANE_CANON_UNITS: tuple[str, ...] = ("m", "m", "A", "A")
 
 
-@dataclass
+class _ProcessingHistoryView(list):
+    """Mutable compatibility view over ``Scan.processing_state``."""
+
+    def __init__(self, scan: "Scan"):
+        self._scan = scan
+        super().__init__(scan._processing_history_entries())
+
+    def _replace(self, entries) -> None:
+        self._scan.processing_history = list(entries)
+        super().clear()
+        super().extend(self._scan._processing_history_entries())
+
+    def append(self, entry) -> None:
+        self._replace([*list(self), entry])
+
+    def extend(self, entries) -> None:
+        self._replace([*list(self), *list(entries)])
+
+    def clear(self) -> None:
+        self._replace([])
+
+    def pop(self, index: int = -1):
+        entries = list(self)
+        item = entries.pop(index)
+        self._replace(entries)
+        return item
+
+
+@dataclass(init=False)
 class Scan:
     """A parsed STM topography scan with all planes in display orientation.
 
@@ -61,8 +89,116 @@ class Scan:
     scan_range_m: Tuple[float, float]
     source_path: Path
     source_format: str
-    processing_history: List[dict] = field(default_factory=list)
     experiment_metadata: dict[str, Any] = field(default_factory=dict)
+    _processing_state: Any = field(default=None, init=False, repr=False)
+    _processing_history_timestamps: list[str | None] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+
+    def __init__(
+        self,
+        planes: List[np.ndarray],
+        plane_names: List[str],
+        plane_units: List[str],
+        plane_synthetic: List[bool],
+        header: dict,
+        scan_range_m: Tuple[float, float],
+        source_path: Path,
+        source_format: str,
+        processing_state: Any | None = None,
+        processing_history: List[dict] | None = None,
+        experiment_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.planes = planes
+        self.plane_names = plane_names
+        self.plane_units = plane_units
+        self.plane_synthetic = plane_synthetic
+        self.header = header
+        self.scan_range_m = scan_range_m
+        self.source_path = source_path
+        self.source_format = source_format
+        self.experiment_metadata = dict(experiment_metadata or {})
+        self._processing_state = None
+        self._processing_history_timestamps = []
+        self.processing_state = processing_state
+        if processing_history is not None:
+            self.processing_history = processing_history
+
+    @staticmethod
+    def _empty_processing_state():
+        from probeflow.processing.state import ProcessingState
+        return ProcessingState()
+
+    @staticmethod
+    def _coerce_processing_state(value):
+        from probeflow.processing.state import ProcessingState
+        if value is None:
+            return ProcessingState()
+        if isinstance(value, ProcessingState):
+            return ProcessingState.from_dict(value.to_dict())
+        if isinstance(value, dict):
+            return ProcessingState.from_dict(value)
+        if hasattr(value, "to_dict"):
+            return ProcessingState.from_dict(value.to_dict())
+        raise TypeError(f"Unsupported processing_state: {type(value).__name__}")
+
+    @property
+    def processing_state(self):
+        """Canonical numerical processing state for this scan."""
+        if self._processing_state is None:
+            self._processing_state = self._empty_processing_state()
+        return self._processing_state
+
+    @processing_state.setter
+    def processing_state(self, value) -> None:
+        state = self._coerce_processing_state(value)
+        self._processing_state = state
+        self._processing_history_timestamps = [None] * len(state.steps)
+
+    def record_processing_state(
+        self,
+        state,
+        *,
+        timestamp: str | None = None,
+    ) -> None:
+        """Append canonical processing steps to this scan."""
+        from datetime import datetime
+        from probeflow.processing.state import ProcessingState
+
+        state = self._coerce_processing_state(state)
+        if not state.steps:
+            return
+        current = self.processing_state
+        self._processing_state = ProcessingState(steps=[
+            *current.steps,
+            *state.steps,
+        ])
+        ts = timestamp or datetime.now().isoformat()
+        self._processing_history_timestamps.extend([ts] * len(state.steps))
+
+    def _processing_history_entries(self) -> list[dict[str, Any]]:
+        from probeflow.processing.history import processing_history_entries_from_state
+        return processing_history_entries_from_state(
+            self.processing_state,
+            timestamps=self._processing_history_timestamps,
+        )
+
+    @property
+    def processing_history(self) -> List[dict]:
+        """Legacy history view derived from ``processing_state``."""
+        return _ProcessingHistoryView(self)
+
+    @processing_history.setter
+    def processing_history(self, entries: List[dict] | None) -> None:
+        from probeflow.processing.history import processing_state_from_history
+        self._processing_state = processing_state_from_history(entries)
+        self._processing_history_timestamps = [
+            entry.get("timestamp") if isinstance(entry, dict) else None
+            for entry in (entries or [])
+            if isinstance(entry, dict) and entry.get("op")
+        ]
 
     @property
     def n_planes(self) -> int:

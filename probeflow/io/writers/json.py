@@ -73,13 +73,9 @@ def write_json(
         })
         # Include processing history when no ExportProvenance is provided
         # (ExportProvenance carries it at the top level via processing_state).
-        if scan.processing_history and provenance is None:
-            meta["processing_state"] = {
-                "steps": [
-                    {"op": h["op"], "params": h["params"]}
-                    for h in scan.processing_history
-                ]
-            }
+        scan_state = getattr(scan, "processing_state", None)
+        if scan_state is not None and scan_state.steps and provenance is None:
+            meta["processing_state"] = scan_state.to_dict()
     if extra_meta:
         meta.update(extra_meta)
 

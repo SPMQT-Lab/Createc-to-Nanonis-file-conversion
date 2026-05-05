@@ -5,8 +5,9 @@ No Qt imports — this module can be tested without a running Qt event loop.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from probeflow.processing.history import processing_history_entries_from_state
 
 if TYPE_CHECKING:
     from probeflow.core.scan_model import Scan
@@ -280,29 +281,6 @@ def _area_geometry(geometry) -> bool:
     return geometry.get("kind") in {"rectangle", "ellipse", "polygon"}
 
 
-def processing_history_entries_from_state(
-    state: "ProcessingState",
-    *,
-    timestamp: str | None = None,
-) -> list[dict[str, Any]]:
-    """Return ``Scan.processing_history`` entries for a canonical state.
-
-    This is intentionally the one small adapter between the canonical
-    ``ProcessingState`` model and the older ``Scan.processing_history`` list.
-    Keeping that adapter here prevents Viewer, Convert, CLI, and future
-    handoff paths from inventing slightly different history dictionaries.
-    """
-    ts = timestamp or datetime.now().isoformat()
-    return [
-        {
-            "op": step.op,
-            "params": dict(step.params),
-            "timestamp": ts,
-        }
-        for step in state.steps
-    ]
-
-
 def gui_state_has_numeric_processing(gui_state: dict | None) -> bool:
     """Return whether a GUI dict emits at least one canonical processing step."""
     return bool(processing_state_from_gui(gui_state or {}).steps)
@@ -318,7 +296,7 @@ def apply_processing_state_to_scan(
 
     Converts *proc_state* to a canonical :class:`ProcessingState`, applies it
     via :func:`~probeflow.processing.state.apply_processing_state`, and
-    records each step in ``scan.processing_history``.
+    records each step on ``scan.processing_state``.
 
     Updates ``scan.planes[plane_idx]`` in place and returns *scan*.
     Display-only settings (grain overlay, colormap, clip percentiles) are ignored.
@@ -335,6 +313,6 @@ def apply_processing_state_to_scan(
     a        = apply_processing_state(scan.planes[plane_idx], state)
 
     scan.planes[plane_idx] = a
-    scan.processing_history.extend(processing_history_entries_from_state(state))
+    scan.record_processing_state(state)
 
     return scan

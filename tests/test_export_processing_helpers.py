@@ -193,6 +193,7 @@ class TestApplyProcessingStateSingleOp:
         assert len(scan.processing_history) == 1
         assert scan.processing_history[0]["op"] == "align_rows"
         assert scan.processing_history[0]["params"] == {"method": "median"}
+        assert [step.op for step in scan.processing_state.steps] == ["align_rows"]
 
     def test_smooth_appends_entry(self):
         scan = _make_scan(np.ones((8, 8)))
@@ -242,6 +243,10 @@ class TestApplyProcessingStateMultipleOps:
         assert len(scan.processing_history) == 2
         assert scan.processing_history[0]["op"] == "align_rows"
         assert scan.processing_history[1]["op"] == "plane_bg"
+        assert [step.op for step in scan.processing_state.steps] == [
+            "align_rows",
+            "plane_bg",
+        ]
 
     def test_three_ops_in_correct_pipeline_order(self):
         plane = np.arange(64, dtype=float).reshape(8, 8)

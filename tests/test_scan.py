@@ -192,17 +192,68 @@ class TestProcessingHistory:
     def test_default_is_empty_list(self):
         scan = self._make_scan()
         assert scan.processing_history == []
+        assert scan.processing_state.steps == []
 
-    def test_instances_do_not_share_history(self):
+    def test_record_processing_state_appends_steps(self):
+        from probeflow.processing.state import ProcessingState, ProcessingStep
+        scan = self._make_scan()
+        scan.record_processing_state(ProcessingState([
+            ProcessingStep("align_rows", {"method": "median"}),
+        ]), timestamp="2026-05-05T00:00:00")
+
+        assert [s.op for s in scan.processing_state.steps] == ["align_rows"]
+        assert scan.processing_history == [{
+            "op": "align_rows",
+            "params": {"method": "median"},
+            "timestamp": "2026-05-05T00:00:00",
+        }]
+
+    def test_instances_do_not_share_processing_state(self):
+        from probeflow.processing.state import ProcessingState, ProcessingStep
         a = self._make_scan()
         b = self._make_scan()
-        a.processing_history.append({"op": "plane_bg"})
+        a.record_processing_state(ProcessingState([
+            ProcessingStep("plane_bg", {"order": 1}),
+        ]))
+
         assert b.processing_history == []
+        assert b.processing_state.steps == []
 
     def test_accepts_list_of_dicts(self):
-        entry = {"op": "align_rows", "method": "median"}
+        entry = {"op": "align_rows", "params": {"method": "median"}}
         scan = self._make_scan(processing_history=[entry])
         assert scan.processing_history == [entry]
+        assert scan.processing_state.steps[0].op == "align_rows"
+        assert scan.processing_state.steps[0].params == {"method": "median"}
+
+    def test_assigning_legacy_history_rebuilds_processing_state(self):
+        scan = self._make_scan()
+        scan.processing_history = [{
+            "op": "smooth",
+            "params": {"sigma_px": 2.0},
+            "timestamp": "2026-05-05T01:00:00",
+        }]
+
+        assert [s.op for s in scan.processing_state.steps] == ["smooth"]
+        assert scan.processing_state.steps[0].params == {"sigma_px": 2.0}
+        assert scan.processing_history == [{
+            "op": "smooth",
+            "params": {"sigma_px": 2.0},
+            "timestamp": "2026-05-05T01:00:00",
+        }]
+
+    def test_processing_history_append_updates_canonical_state(self):
+        scan = self._make_scan()
+        scan.processing_history.append({
+            "op": "plane_bg",
+            "params": {"order": 1},
+        })
+
+        assert [s.op for s in scan.processing_state.steps] == ["plane_bg"]
+        assert scan.processing_history == [{
+            "op": "plane_bg",
+            "params": {"order": 1},
+        }]
 
 
 # ─── Backward-plane orientation ──────────────────────────────────────────────
