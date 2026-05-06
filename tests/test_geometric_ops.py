@@ -227,7 +227,7 @@ class TestProcessingStateIntegration:
     def test_rotate_arbitrary_warns_when_roi_present(self, square_arr):
         state = ProcessingState(steps=[
             ProcessingStep("roi", {
-                "rect": (1, 1, 4, 4),
+                "roi_id": "roi-1",
                 "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
             }),
             ProcessingStep("rotate_arbitrary", {"angle_degrees": 30.0}),

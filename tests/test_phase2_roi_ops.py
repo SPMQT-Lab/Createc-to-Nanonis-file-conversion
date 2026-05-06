@@ -373,18 +373,6 @@ class TestProcessingStateRoiId:
                    for warning in w)
         np.testing.assert_allclose(result, arr)
 
-    def test_inline_geometry_still_works_without_roi_set(self):
-        arr = np.ones((32, 32), dtype=np.float64)
-        state = ProcessingState(steps=[
-            ProcessingStep("roi", {
-                "rect": (5, 5, 15, 15),
-                "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
-            }),
-        ])
-        result = apply_processing_state(arr, state, roi_set=None)
-        assert result.shape == arr.shape
-
-
 # ═════════════════════════════════════════════════════════════════════════════
 # 5.  Integration test: full round-trip through sidecar serialisation
 # ═════════════════════════════════════════════════════════════════════════════

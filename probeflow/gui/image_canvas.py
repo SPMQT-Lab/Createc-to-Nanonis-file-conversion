@@ -5,7 +5,7 @@ Scene coordinates map 1:1 to image pixel coordinates:
   pixel (col, row) → scene QPointF(col, row).
   Scene rect (0, 0, Nx, Ny) spans the full image.
 
-This widget replaced the older _ZoomLabel-based image view.  It keeps the
+This widget replaced the older QLabel-based image view.  It keeps the
 small compatibility surface still used by ImageViewerDialog while owning ROI
 drawing, movement, hover, and context-menu interactions directly.
 
@@ -44,7 +44,7 @@ _DRAWING_TOOLS = frozenset({"rectangle", "ellipse", "polygon", "freehand", "line
 
 
 class ImageCanvas(QGraphicsView):
-    """QGraphicsView-based image canvas — drop-in replacement for _ZoomLabel."""
+    """QGraphicsView-based image canvas with ROI drawing and pan/zoom support."""
 
     marker_clicked            = Signal(object)
     pixel_clicked             = Signal(float, float)

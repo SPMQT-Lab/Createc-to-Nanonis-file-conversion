@@ -2126,7 +2126,7 @@ class ImageViewerDialog(QDialog):
         return
 
     def _refresh_zero_markers(self):
-        """Push the current set-zero pick state into _ZoomLabel for drawing.
+        """Push the current set-zero pick state into the image canvas for drawing.
 
         Sources, in order of priority:
           1. In-progress plane picks (``self._zero_plane_points_px``).
@@ -2502,13 +2502,9 @@ class ImageViewerDialog(QDialog):
         if wants_filter_roi and active_area_roi_id is not None:
             self._processing["processing_scope"] = "roi"
             self._processing["processing_roi_id"] = active_area_roi_id
-            self._processing.pop("roi_rect", None)
-            self._processing.pop("roi_geometry", None)
         else:
             self._processing.pop("processing_scope", None)
             self._processing.pop("processing_roi_id", None)
-            self._processing.pop("roi_rect", None)
-            self._processing.pop("roi_geometry", None)
         self._clear_bad_line_preview()
         self._refresh_processing_display()
 

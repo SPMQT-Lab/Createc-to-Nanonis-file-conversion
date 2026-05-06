@@ -451,8 +451,6 @@ def test_viewer_apply_keeps_whole_image_scope_with_active_area_roi(qapp, monkeyp
     assert dlg._processing["smooth_sigma"] == 1.0
     assert "processing_scope" not in dlg._processing
     assert "processing_roi_id" not in dlg._processing
-    assert "roi_geometry" not in dlg._processing
-    assert "roi_rect" not in dlg._processing
 
     dlg.close()
     dlg.deleteLater()
@@ -479,8 +477,6 @@ def test_viewer_apply_scopes_local_filter_to_active_area_roi(qapp, monkeypatch):
 
     assert dlg._processing["processing_scope"] == "roi"
     assert dlg._processing["processing_roi_id"] == roi.id
-    assert "roi_geometry" not in dlg._processing
-    assert "roi_rect" not in dlg._processing
 
     dlg.close()
     dlg.deleteLater()
@@ -618,60 +614,6 @@ def test_viewer_clear_zero_references_keeps_leveling_processing(qapp, monkeypatc
 
     dlg.close()
     dlg.deleteLater()
-
-
-def test_zoom_label_shift_constrains_area_selection_to_square(qapp):
-    from PySide6.QtCore import Qt
-    from probeflow.gui.viewer.widgets import _ZoomLabel
-
-    label = _ZoomLabel()
-    label.resize(200, 100)
-
-    bounds = label._constrain_bounds(0.1, 0.1, 0.8, 0.3, Qt.ShiftModifier)
-    width_px = abs(bounds[2] - bounds[0]) * label.width()
-    height_px = abs(bounds[3] - bounds[1]) * label.height()
-
-    assert abs(width_px - height_px) < 1e-9
-
-
-def test_zoom_label_endpoint_drag_updates_existing_selection(qapp):
-    from probeflow.gui.viewer.widgets import _ZoomLabel
-
-    label = _ZoomLabel()
-    label.resize(200, 100)
-    label._selection_geometry = {
-        "kind": "rectangle",
-        "bounds_frac": (0.1, 0.1, 0.5, 0.5),
-    }
-
-    geometry = label._geometry_with_dragged_handle(2, (0.8, 0.4))
-
-    assert geometry == {
-        "kind": "rectangle",
-        "bounds_frac": (0.1, 0.1, 0.8, 0.4),
-    }
-
-
-def test_zoom_label_line_nudge_moves_one_image_pixel_and_emits(qapp):
-    from probeflow.gui.viewer.widgets import _ZoomLabel
-
-    label = _ZoomLabel()
-    label.resize(200, 100)
-    label._selection_geometry = {
-        "kind": "line",
-        "points_frac": [(0.25, 0.50), (0.75, 0.50)],
-    }
-    previews = []
-    commits = []
-    label.selection_preview_changed.connect(lambda geometry: previews.append(geometry))
-    label.selection_changed.connect(lambda geometry: commits.append(geometry))
-
-    moved = label.nudge_line(1, -1, (101, 201))
-
-    assert moved is True
-    assert previews and commits
-    points = label.current_selection()["points_frac"]
-    np.testing.assert_allclose(points, [(0.255, 0.49), (0.755, 0.49)])
 
 
 def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):

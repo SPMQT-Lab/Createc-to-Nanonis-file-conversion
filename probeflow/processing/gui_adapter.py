@@ -38,8 +38,6 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "processing_scope",
     "processing_roi_id",
     "roi_id",
-    "roi_rect",
-    "roi_geometry",
     "geometric_ops",
 )
 
@@ -65,21 +63,11 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
         "fourier_filter",
         "fft_soft_border",
     }
-    roi_rect = None
     roi_id = None
-    roi_geometry = gui_state.get("roi_geometry")
     if roi_scope:
         roi_id = gui_state.get("processing_roi_id") or gui_state.get("roi_id")
         if roi_id is not None:
             roi_id = str(roi_id)
-        try:
-            roi_rect = tuple(int(v) for v in gui_state.get("roi_rect", ()))
-            if len(roi_rect) != 4:
-                roi_rect = None
-        except (TypeError, ValueError):
-            roi_rect = None
-        if not _area_geometry(roi_geometry):
-            roi_geometry = None
 
     skipped_roi_scope_warning = False
 
@@ -89,10 +77,6 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             params = {"step": {"op": step.op, "params": dict(step.params)}}
             if roi_id is not None:
                 params["roi_id"] = roi_id
-            elif roi_geometry is not None:
-                params["geometry"] = dict(roi_geometry)
-            elif roi_rect is not None:
-                params["rect"] = roi_rect
             else:
                 if not skipped_roi_scope_warning:
                     warnings.warn(
@@ -252,12 +236,6 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             }))
 
     return ProcessingState(steps=steps)
-
-
-def _area_geometry(geometry) -> bool:
-    if not isinstance(geometry, dict):
-        return False
-    return geometry.get("kind") in {"rectangle", "ellipse", "polygon"}
 
 
 def gui_state_has_numeric_processing(gui_state: dict | None) -> bool:

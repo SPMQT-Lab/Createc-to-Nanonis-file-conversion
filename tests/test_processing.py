@@ -30,7 +30,6 @@ from probeflow.processing import (
     set_zero_plane,
     stm_line_background,
     subtract_background,
-    patch_interpolate,
 )
 from probeflow.cli import main as cli_main
 
@@ -642,17 +641,6 @@ class TestPeriodicNotchFilter:
     def test_invalid_radius_raises(self):
         with pytest.raises(ValueError, match="radius_px"):
             periodic_notch_filter(np.ones((8, 8)), [(2, 0)], radius_px=-1.0)
-
-
-class TestPatchInterpolate:
-    def test_fills_masked_patch_from_surroundings(self):
-        arr = np.ones((16, 16), dtype=float)
-        arr[6:10, 6:10] = 20.0
-        mask = np.zeros_like(arr, dtype=bool)
-        mask[6:10, 6:10] = True
-        out = patch_interpolate(arr, mask, iterations=80)
-        assert float(np.mean(out[6:10, 6:10])) < 5.0
-        np.testing.assert_array_equal(out[~mask], arr[~mask])
 
 
 # ─── gaussian_smooth ─────────────────────────────────────────────────────────

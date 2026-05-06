@@ -38,7 +38,6 @@ _SUPPORTED_OPS: frozenset[str] = frozenset({
     "fourier_filter",
     "fft_soft_border",
     "periodic_notch_filter",
-    "patch_interpolate",
     "linear_undistort",
     "set_zero_point",
     "set_zero_plane",
@@ -58,58 +57,6 @@ _ROI_ELIGIBLE_OPS: frozenset[str] = frozenset({
     "fourier_filter",
     "fft_soft_border",
 })
-
-
-def roi_geometry_mask(
-    shape: tuple[int, int],
-    geometry: dict[str, Any] | None,
-) -> np.ndarray | None:
-    """Return a boolean mask for a rectangle/ellipse/polygon ROI geometry."""
-    if not geometry:
-        return None
-    from probeflow.core.roi import roi_from_legacy_geometry_dict
-    roi = roi_from_legacy_geometry_dict(shape, geometry)
-    if roi is None:
-        return None
-    return roi.to_mask(shape)
-
-
-def _rect_from_geometry(shape: tuple[int, int], geometry: dict[str, Any]):
-    for key in ("rect_px", "bounds_px", "rect"):
-        rect = geometry.get(key)
-        if rect is not None:
-            try:
-                if len(rect) == 4:
-                    return rect
-            except TypeError:
-                pass
-    bounds_frac = geometry.get("bounds_frac")
-    if bounds_frac is None:
-        return ()
-    try:
-        x0f, y0f, x1f, y1f = [float(v) for v in bounds_frac]
-    except (TypeError, ValueError):
-        return ()
-    Ny, Nx = shape
-    return (
-        int(round(min(x0f, x1f) * (Nx - 1))),
-        int(round(min(y0f, y1f) * (Ny - 1))),
-        int(round(max(x0f, x1f) * (Nx - 1))),
-        int(round(max(y0f, y1f) * (Ny - 1))),
-    )
-
-
-def roi_geometry_bounds(
-    shape: tuple[int, int],
-    geometry: dict[str, Any] | None,
-) -> tuple[int, int, int, int] | None:
-    """Return inclusive pixel bounds for an area ROI geometry."""
-
-    mask = roi_geometry_mask(shape, geometry)
-    if mask is None or not mask.any():
-        return None
-    ys, xs = np.nonzero(mask)
-    return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
 def apply_operation_with_optional_roi(
@@ -138,59 +85,6 @@ def apply_operation_with_optional_roi(
     result = source.copy()
     result[mask] = processed_full[mask]
     return result
-
-
-def _points_from_geometry(
-    shape: tuple[int, int],
-    geometry: dict[str, Any],
-) -> list[tuple[float, float]]:
-    raw = geometry.get("points_px")
-    if raw is None:
-        raw = geometry.get("points")
-    if raw is None and geometry.get("points_frac") is not None:
-        Ny, Nx = shape
-        points = []
-        for item in geometry.get("points_frac", ()):
-            try:
-                points.append((
-                    float(item[0]) * (Nx - 1),
-                    float(item[1]) * (Ny - 1),
-                ))
-            except (TypeError, ValueError, IndexError):
-                continue
-        raw = points
-    if raw is None:
-        raw = ()
-    points: list[tuple[float, float]] = []
-    for item in raw:
-        try:
-            points.append((float(item[0]), float(item[1])))
-        except (TypeError, ValueError, IndexError):
-            continue
-    return points
-
-
-def _clamped_rect(
-    shape: tuple[int, int],
-    rect,
-) -> tuple[int, int, int, int]:
-    try:
-        x0, y0, x1, y1 = [int(round(float(v))) for v in rect]
-    except (TypeError, ValueError):
-        raise ValueError("bad rect")
-    Ny, Nx = shape
-    x0 = max(0, min(Nx - 1, x0))
-    x1 = max(0, min(Nx - 1, x1))
-    y0 = max(0, min(Ny - 1, y0))
-    y1 = max(0, min(Ny - 1, y1))
-    if x1 < x0:
-        x0, x1 = x1, x0
-    if y1 < y0:
-        y0, y1 = y1, y0
-    if x1 <= x0 or y1 <= y0:
-        raise ValueError("empty rect")
-    return x0, y0, x1, y1
-
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
@@ -502,11 +396,9 @@ def apply_processing_state(
     state:
         Processing steps to apply.
     roi_set:
-        Optional :class:`probeflow.core.roi.ROISet`.  When a ``roi`` step
-        references an ROI by ``roi_id``, the ROI is looked up in this set at
-        execution time.  If the ID is not found, the step is skipped with a
-        warning.  Inline geometry (``rect`` / ``geometry`` params) still works
-        without a ``roi_set``.
+        Optional :class:`probeflow.core.roi.ROISet`.  ``roi`` steps reference
+        ROIs by ``roi_id`` and resolve them from this set at execution time. If
+        the ID is not found, the step is skipped with a warning.
 
     Returns
     -------
@@ -539,8 +431,6 @@ def apply_processing_state(
         elif step.op == "align_rows":
             a = _proc.align_rows(a, method=p.get("method", "median"))
         elif step.op == "plane_bg":
-            fit_geometry = p.get("fit_geometry")
-            fit_mask_legacy = roi_geometry_mask(a.shape, fit_geometry) if fit_geometry else None
             # Resolve new ROI expression parameters (fit_roi, apply_roi, exclude_roi)
             fit_roi = _resolve_bg_roi_param(p, "fit_roi", a.shape, roi_set)
             apply_roi = _resolve_bg_roi_param(p, "apply_roi", a.shape, roi_set)
@@ -553,7 +443,6 @@ def apply_processing_state(
                 exclude_roi=exclude_roi,
                 step_tolerance=bool(p.get("step_tolerance", False)),
                 fit_rect=p.get("fit_rect"),
-                fit_mask=fit_mask_legacy,
             )
         elif step.op == "stm_line_bg":
             a = _proc.stm_line_background(
@@ -614,26 +503,6 @@ def apply_processing_state(
                 p.get("peaks", ()),
                 radius_px=float(p.get("radius_px", 3.0)),
             )
-        elif step.op == "patch_interpolate":
-            geometry = p.get("geometry")
-            if geometry:
-                mask = roi_geometry_mask(a.shape, geometry)
-            else:
-                try:
-                    x0, y0, x1, y1 = _clamped_rect(a.shape, p.get("rect", ()))
-                except ValueError:
-                    continue
-                mask = np.zeros(a.shape, dtype=bool)
-                mask[y0:y1 + 1, x0:x1 + 1] = True
-            if mask is None or not mask.any():
-                continue
-            a = _proc.patch_interpolate(
-                a,
-                mask,
-                method=str(p.get("method", "line_fit")),
-                rim_px=int(p.get("rim_px", 20)),
-                iterations=int(p.get("iterations", 200)),
-            )
         elif step.op == "linear_undistort":
             a = _proc.linear_undistort(
                 a,
@@ -660,46 +529,29 @@ def apply_processing_state(
                 continue
             if nested.op not in _ROI_ELIGIBLE_OPS:
                 continue
-            # Three ways to specify the region:
-            # 1. roi_id  — look up by UUID in the provided roi_set
-            # 2. geometry — legacy dict format
-            # 3. rect    — (x0, y0, x1, y1) pixel rect
             roi_id = p.get("roi_id")
-            if roi_id is not None:
-                if roi_set is None:
-                    import warnings
-                    warnings.warn(
-                        f"roi step references roi_id={roi_id!r} but no roi_set "
-                        "was passed to apply_processing_state — step skipped.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                    continue
-                roi_obj = roi_set.get(roi_id)
-                if roi_obj is None:
-                    import warnings
-                    warnings.warn(
-                        f"roi_id={roi_id!r} not found in roi_set — step skipped.",
-                        UserWarning,
-                        stacklevel=2,
-                    )
-                    continue
-                mask = roi_obj.to_mask(a.shape)
-                r0, r1, c0, c1 = roi_obj.bounds(a.shape)
-                bounds = (c0, r0, c1, r1)  # (x0, y0, x1, y1)
-            else:
-                geometry = p.get("geometry")
-                if geometry:
-                    mask = roi_geometry_mask(a.shape, geometry)
-                    bounds = roi_geometry_bounds(a.shape, geometry)
-                else:
-                    try:
-                        x0, y0, x1, y1 = _clamped_rect(a.shape, p.get("rect", ()))
-                    except ValueError:
-                        continue
-                    mask = np.zeros(a.shape, dtype=bool)
-                    mask[y0:y1 + 1, x0:x1 + 1] = True
-                    bounds = (x0, y0, x1, y1)
+            if roi_id is None:
+                continue
+            if roi_set is None:
+                import warnings
+                warnings.warn(
+                    f"roi step references roi_id={roi_id!r} but no roi_set "
+                    "was passed to apply_processing_state — step skipped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+            roi_obj = roi_set.get(roi_id)
+            if roi_obj is None:
+                import warnings
+                warnings.warn(
+                    f"roi_id={roi_id!r} not found in roi_set — step skipped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+            mask = roi_obj.to_mask(a.shape)
+            bounds = roi_obj.bounds(a.shape)
             if mask is None or bounds is None or not mask.any():
                 continue
             a = apply_operation_with_optional_roi(

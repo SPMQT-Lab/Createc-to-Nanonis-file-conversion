@@ -318,36 +318,6 @@ class TestGuiConversion:
             "applied_to": "whole_image",
         }
 
-    def test_roi_scope_wraps_local_filter_step(self):
-        gui = {
-            "processing_scope": "roi",
-            "roi_rect": (2, 3, 8, 9),
-            "smooth_sigma": 1.5,
-        }
-        state = processing_state_from_gui(gui)
-        assert len(state.steps) == 1
-        step = state.steps[0]
-        assert step.op == "roi"
-        assert step.params["rect"] == (2, 3, 8, 9)
-        assert step.params["step"] == {
-            "op": "smooth",
-            "params": {"sigma_px": 1.5},
-        }
-
-    def test_roi_scope_wraps_local_filter_with_shape_geometry(self):
-        geometry = {"kind": "ellipse", "rect_px": (2, 3, 8, 9)}
-        state = processing_state_from_gui({
-            "processing_scope": "roi",
-            "roi_geometry": geometry,
-            "smooth_sigma": 1.5,
-        })
-        assert len(state.steps) == 1
-        step = state.steps[0]
-        assert step.op == "roi"
-        assert step.params["geometry"] == geometry
-        assert "rect" not in step.params
-        assert step.params["step"]["op"] == "smooth"
-
     def test_roi_scope_wraps_active_roi_id(self):
         state = processing_state_from_gui({
             "processing_scope": "roi",
@@ -366,7 +336,7 @@ class TestGuiConversion:
     def test_roi_scope_keeps_global_background_steps_global(self):
         gui = {
             "processing_scope": "roi",
-            "roi_rect": (2, 3, 8, 9),
+            "processing_roi_id": "roi-123",
             "align_rows": "median",
             "stm_background": {
                 "fit_region": "whole_image",
@@ -382,11 +352,11 @@ class TestGuiConversion:
             "roi",
         ]
         assert state.steps[-1].params["step"]["op"] == "smooth"
+        assert state.steps[-1].params["roi_id"] == "roi-123"
 
-    def test_bad_roi_rect_skips_local_filter_instead_of_falling_back_global(self):
+    def test_roi_scope_without_roi_id_skips_local_filter_instead_of_falling_back_global(self):
         gui = {
             "processing_scope": "roi",
-            "roi_rect": "not-a-rect",
             "smooth_sigma": 1.0,
         }
         with pytest.warns(UserWarning, match="ROI-scoped processing"):
@@ -414,7 +384,7 @@ class TestGuiConversion:
     def test_roi_scope_wraps_soft_border_fft(self):
         gui = {
             "processing_scope": "roi",
-            "roi_rect": (1, 2, 12, 14),
+            "processing_roi_id": "roi-123",
             "fft_soft_border": True,
             "fft_soft_mode": "high_pass",
             "fft_soft_cutoff": 0.25,
@@ -423,6 +393,7 @@ class TestGuiConversion:
         assert len(state.steps) == 1
         step = state.steps[0]
         assert step.op == "roi"
+        assert step.params["roi_id"] == "roi-123"
         assert step.params["step"]["op"] == "fft_soft_border"
         assert step.params["step"]["params"]["mode"] == "high_pass"
 
@@ -744,23 +715,6 @@ class TestApplyKnownSteps:
         apply_processing_state(np.ones((8, 8)), state)
         assert captured["threshold_deg"] == 5.5
 
-    def test_roi_smooth_changes_only_selected_rectangle(self):
-        rng = np.random.default_rng(3)
-        arr = np.zeros((16, 16), dtype=float)
-        arr[5:11, 5:11] = rng.normal(size=(6, 6))
-        state = ProcessingState(steps=[
-            ProcessingStep("roi", {
-                "rect": (5, 5, 10, 10),
-                "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
-            }),
-        ])
-        result = apply_processing_state(arr, state)
-
-        outside = np.ones(arr.shape, dtype=bool)
-        outside[5:11, 5:11] = False
-        np.testing.assert_array_equal(result[outside], arr[outside])
-        assert not np.allclose(result[5:11, 5:11], arr[5:11, 5:11])
-
     def test_apply_operation_with_optional_roi_leaves_outside_mask_unchanged(self):
         arr = np.arange(36, dtype=float).reshape(6, 6)
         mask = np.zeros(arr.shape, dtype=bool)
@@ -808,72 +762,12 @@ class TestApplyKnownSteps:
         np.testing.assert_array_equal(result[~mask], arr[~mask])
         assert not np.allclose(result[mask], arr[mask])
 
-    def test_roi_smooth_changes_only_selected_ellipse_mask(self):
-        rng = np.random.default_rng(4)
-        arr = np.zeros((18, 18), dtype=float)
-        arr[4:14, 4:14] = rng.normal(size=(10, 10))
-        geometry = {
-            "kind": "ellipse",
-            "rect_px": (4, 4, 13, 13),
-        }
-        state = ProcessingState(steps=[
-            ProcessingStep("roi", {
-                "geometry": geometry,
-                "step": {"op": "smooth", "params": {"sigma_px": 1.0}},
-            }),
-        ])
-        result = apply_processing_state(arr, state)
-
-        from probeflow.processing.state import roi_geometry_mask
-        mask = roi_geometry_mask(arr.shape, geometry)
-        assert mask is not None
-        np.testing.assert_array_equal(result[~mask], arr[~mask])
-        assert not np.allclose(result[mask], arr[mask])
-
-    def test_roi_geometry_mask_accepts_fractional_geometry(self):
-        from probeflow.processing.state import roi_geometry_mask
-
-        rect_mask = roi_geometry_mask((10, 10), {
-            "kind": "rectangle",
-            "bounds_frac": (0.2, 0.3, 0.6, 0.7),
-        })
-        polygon_mask = roi_geometry_mask((10, 10), {
-            "kind": "polygon",
-            "points_frac": [(0.2, 0.2), (0.8, 0.2), (0.5, 0.8)],
-        })
-
-        assert rect_mask is not None
-        assert rect_mask.any()
-        assert polygon_mask is not None
-        assert polygon_mask.any()
-
-    def test_patch_interpolate_accepts_polygon_mask(self):
-        arr = np.ones((16, 16), dtype=float)
-        geometry = {
-            "kind": "polygon",
-            "points_px": [(5, 5), (11, 5), (8, 11)],
-        }
-        from probeflow.processing.state import roi_geometry_mask
-        mask = roi_geometry_mask(arr.shape, geometry)
-        assert mask is not None
-        arr[mask] = 20.0
-        state = ProcessingState(steps=[
-            ProcessingStep("patch_interpolate", {
-                "geometry": geometry,
-                "iterations": 80,
-            }),
-        ])
-        result = apply_processing_state(arr, state)
-
-        np.testing.assert_array_equal(result[~mask], arr[~mask])
-        assert float(np.mean(result[mask])) < 5.0
-
     def test_roi_wrapper_ignores_nonlocal_nested_operation(self):
         x = np.linspace(0, 1, 12)
         arr = np.outer(np.ones(12), x)
         state = ProcessingState(steps=[
             ProcessingStep("roi", {
-                "rect": (2, 2, 8, 8),
+                "roi_id": "roi-1",
                 "step": {"op": "plane_bg", "params": {"order": 1}},
             }),
         ])
@@ -912,18 +806,6 @@ class TestApplyKnownSteps:
         ])
         result = apply_processing_state(arr, state)
         assert float(np.std(result)) < float(np.std(arr)) * 0.35
-
-    def test_patch_interpolate_rect_runs(self):
-        arr = np.ones((16, 16), dtype=float)
-        arr[6:10, 6:10] = 20.0
-        state = ProcessingState(steps=[
-            ProcessingStep("patch_interpolate", {
-                "rect": (6, 6, 9, 9),
-                "iterations": 80,
-            }),
-        ])
-        result = apply_processing_state(arr, state)
-        assert float(np.mean(result[6:10, 6:10])) < 5.0
 
     def test_linear_undistort_preserves_shape(self):
         arr = np.ones((20, 20)) * 3.0

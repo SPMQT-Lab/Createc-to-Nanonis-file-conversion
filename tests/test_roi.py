@@ -12,7 +12,6 @@ from probeflow.core.roi import (
     ROISet,
     combine_masks,
     invert_mask,
-    roi_from_legacy_geometry_dict,
     translate,
 )
 from probeflow.processing.state import apply_processing_state, ProcessingState, ProcessingStep
@@ -533,79 +532,6 @@ class TestInvertMask:
         inv = invert_mask(m)
         assert inv[0, 0] is np.bool_(False)
         assert inv[0, 1] is np.bool_(True)
-
-
-# ── Legacy compatibility ──────────────────────────────────────────────────────
-
-class TestLegacyCompat:
-    def test_rect_px_converted(self):
-        geometry = {"kind": "rectangle", "rect_px": (5, 10, 24, 29)}
-        roi = roi_from_legacy_geometry_dict((100, 100), geometry)
-        assert roi is not None
-        assert roi.kind == "rectangle"
-        assert abs(roi.geometry["x"] - 5.0) < 1e-9
-        assert abs(roi.geometry["width"] - 20.0) < 1e-9   # x1-x0+1 = 19+1=20
-
-    def test_bounds_frac_converted(self):
-        geometry = {"kind": "rectangle", "bounds_frac": (0.1, 0.1, 0.3, 0.3)}
-        roi = roi_from_legacy_geometry_dict((100, 100), geometry)
-        assert roi is not None
-        assert roi.kind == "rectangle"
-
-    def test_ellipse_from_rect_px(self):
-        geometry = {"kind": "ellipse", "rect_px": (40, 40, 60, 60)}
-        roi = roi_from_legacy_geometry_dict((100, 100), geometry)
-        assert roi is not None
-        assert roi.kind == "ellipse"
-        assert abs(roi.geometry["cx"] - 50.0) < 1e-9
-        assert abs(roi.geometry["rx"] - 10.5) < 1e-9   # (60-40+1)/2 = 10.5 → max(0.5, 10.5)
-
-    def test_polygon_points_px(self):
-        geometry = {
-            "kind": "polygon",
-            "points_px": [(10.0, 10.0), (30.0, 10.0), (20.0, 30.0)],
-        }
-        roi = roi_from_legacy_geometry_dict((100, 100), geometry)
-        assert roi is not None
-        assert roi.kind == "polygon"
-        assert len(roi.geometry["vertices"]) == 3
-
-    def test_unknown_kind_returns_none(self):
-        roi = roi_from_legacy_geometry_dict((100, 100), {"kind": "star"})
-        assert roi is None
-
-    def test_none_geometry_returns_none(self):
-        roi = roi_from_legacy_geometry_dict((100, 100), None)  # type: ignore[arg-type]
-        assert roi is None
-
-    def test_state_py_roi_geometry_mask_unchanged(self):
-        """apply_processing_state ROI step continues to work after migration."""
-        from probeflow.processing.state import roi_geometry_mask
-        shape = (20, 20)
-        geometry = {"kind": "rectangle", "rect_px": (5, 5, 14, 14)}
-        mask = roi_geometry_mask(shape, geometry)
-        assert mask is not None
-        assert mask.shape == shape
-        assert int(mask.sum()) == 100   # 10×10
-
-    def test_state_py_ellipse_mask_unchanged(self):
-        from probeflow.processing.state import roi_geometry_mask
-        shape = (20, 20)
-        geometry = {"kind": "ellipse", "rect_px": (1, 1, 18, 18)}
-        mask = roi_geometry_mask(shape, geometry)
-        assert mask is not None
-        assert mask.shape == shape
-
-    def test_state_py_polygon_mask_unchanged(self):
-        from probeflow.processing.state import roi_geometry_mask
-        shape = (50, 50)
-        geometry = {
-            "kind": "polygon",
-            "points_px": [(10, 10), (30, 10), (20, 30)],
-        }
-        mask = roi_geometry_mask(shape, geometry)
-        assert mask is not None
-        assert mask.sum() > 0
 
 
 # ── apply_geometric_op_to_scan ────────────────────────────────────────────────
