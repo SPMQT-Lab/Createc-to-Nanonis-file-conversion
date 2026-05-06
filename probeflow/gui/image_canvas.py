@@ -5,9 +5,9 @@ Scene coordinates map 1:1 to image pixel coordinates:
   pixel (col, row) → scene QPointF(col, row).
   Scene rect (0, 0, Nx, Ny) spans the full image.
 
-This widget is a drop-in replacement for the _ZoomLabel widget in
-probeflow.gui.viewer.widgets.  It exposes the same signals and the same
-public API so ImageViewerDialog requires only targeted edits.
+This widget replaced the older _ZoomLabel-based image view.  It keeps the
+small compatibility surface still used by ImageViewerDialog while owning ROI
+drawing, movement, hover, and context-menu interactions directly.
 
 Phase 4b: Full drawing-tool support — rectangle, ellipse, polygon,
 freehand, line, point — plus pan-mode ROI drag-move and hover highlight.
@@ -48,8 +48,6 @@ class ImageCanvas(QGraphicsView):
 
     marker_clicked            = Signal(object)
     pixel_clicked             = Signal(float, float)
-    selection_preview_changed = Signal(object)
-    selection_changed         = Signal(object)
     pixmap_resized            = Signal(int)
     context_menu_requested    = Signal(object)
     pixel_hovered             = Signal(int, int, object)
@@ -166,7 +164,6 @@ class ImageCanvas(QGraphicsView):
         self._set_zero_mode: bool = False
 
         self._selection_tool: str = "pan"
-        self._selection_geometry = None
 
         self._image_roi_set = None
         self._roi_items: dict[str, QGraphicsItemGroup] = {}
@@ -461,22 +458,13 @@ class ImageCanvas(QGraphicsView):
             self.setCursor(Qt.ArrowCursor)
             self.tool_changed.emit("pan")
 
-    # ── compat shims for old _ZoomLabel API ──────────────────────────────────
+    # ── small compatibility shims for ImageViewerDialog ──────────────────────
 
     def set_selection_tool(self, kind: str) -> None:
         self.set_tool(kind if kind != "none" else "pan")
 
     def selection_tool(self) -> str:
         return self._tool
-
-    def current_selection(self):
-        return None
-
-    def clear_roi(self) -> None:
-        self._selection_geometry = None
-
-    def nudge_line(self, dx_px, dy_px, image_shape) -> bool:
-        return False
 
     def set_set_zero_mode(self, enabled: bool) -> None:
         self._set_zero_mode = bool(enabled)

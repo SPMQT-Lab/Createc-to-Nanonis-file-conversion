@@ -1,7 +1,5 @@
-"""Drawing tool state machine for ProbeFlow image canvas."""
+"""Drawing tool constants for ProbeFlow image canvas."""
 from __future__ import annotations
-
-from PySide6.QtCore import QObject, Signal
 
 TOOLS = ("pan", "rectangle", "ellipse", "polygon", "freehand", "line", "point")
 
@@ -14,23 +12,3 @@ _TOOL_HINTS: dict[str, str] = {
     "line":      "Line [L]: drag to draw  •  Esc to cancel",
     "point":     "Point [T]: click to place",
 }
-
-
-class ToolManager(QObject):
-    """Tracks the active drawing tool and notifies subscribers of changes."""
-
-    tool_changed = Signal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._tool = "pan"
-
-    def tool(self) -> str:
-        return self._tool
-
-    def set_tool(self, tool: str) -> None:
-        if tool not in TOOLS:
-            tool = "pan"
-        if tool != self._tool:
-            self._tool = tool
-            self.tool_changed.emit(tool)

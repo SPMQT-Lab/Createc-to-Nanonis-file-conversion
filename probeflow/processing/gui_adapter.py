@@ -24,15 +24,7 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "remove_bad_lines_min_segment_length_px",
     "remove_bad_lines_max_adjacent_bad_lines",
     "align_rows",
-    "bg_order",
-    "bg_step_tolerance",
-    "background_fit_rect",
-    "background_fit_geometry",
-    "background_fit_roi_id",
-    "background_exclude_roi_id",
-    "stm_line_bg",
     "stm_background",
-    "facet_level",
     "smooth_sigma",
     "highpass_sigma",
     "edge_method",
@@ -55,7 +47,7 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
 def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
     """Convert a GUI processing dict into a canonical :class:`ProcessingState`.
 
-    The GUI dict uses keys such as ``"remove_bad_lines"``, ``"bg_order"``, etc.
+    The GUI dict uses keys such as ``"remove_bad_lines"``, ``"align_rows"``, etc.
     Display-only keys (``colormap``, ``clip_low``, ``clip_high``,
     ``grain_threshold``, ``grain_above``) are silently ignored.
 
@@ -140,40 +132,6 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
     if align:
         _append_step(ProcessingStep("align_rows", {"method": str(align)}))
 
-    bg_order = gui_state.get("bg_order")
-    if bg_order is not None:
-        params = {
-            "order": int(bg_order),
-            "step_tolerance": bool(gui_state.get("bg_step_tolerance", False)),
-        }
-        fit_rect = gui_state.get("background_fit_rect")
-        fit_geometry = gui_state.get("background_fit_geometry")
-        fit_roi_id = (
-            gui_state.get("background_fit_roi_id")
-            or gui_state.get("plane_bg_roi_fit")
-        )
-        exclude_roi_id = (
-            gui_state.get("background_exclude_roi_id")
-            or gui_state.get("plane_bg_roi_exclude")
-        )
-        if fit_rect is not None:
-            try:
-                fit_rect_tuple = tuple(int(v) for v in fit_rect)
-                if len(fit_rect_tuple) == 4:
-                    params["fit_rect"] = fit_rect_tuple
-            except (TypeError, ValueError):
-                pass
-        if _area_geometry(fit_geometry):
-            params["fit_geometry"] = dict(fit_geometry)
-        if fit_roi_id:
-            params["fit_roi_id"] = str(fit_roi_id)
-        if exclude_roi_id:
-            params["exclude_roi_id"] = str(exclude_roi_id)
-        _append_step(ProcessingStep("plane_bg", params))
-
-    if gui_state.get("stm_line_bg") == "step_tolerant":
-        _append_step(ProcessingStep("stm_line_bg", {"mode": "step_tolerant"}))
-
     stm_bg = gui_state.get("stm_background")
     if isinstance(stm_bg, dict):
         params = {
@@ -191,9 +149,6 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             params["fit_roi_id"] = str(stm_bg["fit_roi_id"])
             params["applied_to"] = "whole_image"
         _append_step(ProcessingStep("stm_background", params))
-
-    if gui_state.get("facet_level"):
-        _append_step(ProcessingStep("facet_level", {"threshold_deg": 3.0}))
 
     smooth_sigma = gui_state.get("smooth_sigma")
     if smooth_sigma:

@@ -429,7 +429,7 @@ def test_viewer_apply_merges_standard_and_advanced_processing(qapp, monkeypatch)
     dlg.deleteLater()
 
 
-def test_viewer_apply_scopes_local_filter_to_active_area_roi(qapp, monkeypatch):
+def test_viewer_apply_keeps_whole_image_scope_with_active_area_roi(qapp, monkeypatch):
     from probeflow.core.roi import ROI, ROISet
     from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
 
@@ -445,6 +445,35 @@ def test_viewer_apply_scopes_local_filter_to_active_area_roi(qapp, monkeypatch):
     dlg._image_roi_set = roi_set
     dlg._processing_panel.set_state({"smooth_sigma": 1.0})
     dlg._scope_cb.setCurrentIndex(0)
+
+    dlg._on_apply_processing()
+
+    assert dlg._processing["smooth_sigma"] == 1.0
+    assert "processing_scope" not in dlg._processing
+    assert "processing_roi_id" not in dlg._processing
+    assert "roi_geometry" not in dlg._processing
+    assert "roi_rect" not in dlg._processing
+
+    dlg.close()
+    dlg.deleteLater()
+
+
+def test_viewer_apply_scopes_local_filter_to_active_area_roi(qapp, monkeypatch):
+    from probeflow.core.roi import ROI, ROISet
+    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
+
+    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+    monkeypatch.setattr(ImageViewerDialog, "_refresh_processing_display", lambda self: None)
+
+    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
+    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+    roi_set = ROISet(image_id="img1")
+    roi = ROI.new("rectangle", {"x": 2.0, "y": 2.0, "width": 3.0, "height": 3.0})
+    roi_set.add(roi)
+    roi_set.set_active(roi.id)
+    dlg._image_roi_set = roi_set
+    dlg._processing_panel.set_state({"smooth_sigma": 1.0})
+    dlg._scope_cb.setCurrentIndex(1)
 
     dlg._on_apply_processing()
 
@@ -472,6 +501,7 @@ def test_viewer_apply_rejects_local_filter_for_active_non_area_roi(qapp, monkeyp
     roi_set.set_active(roi.id)
     dlg._image_roi_set = roi_set
     dlg._processing_panel.set_state({"smooth_sigma": 1.0})
+    dlg._scope_cb.setCurrentIndex(1)
 
     dlg._on_apply_processing()
 
@@ -482,31 +512,7 @@ def test_viewer_apply_rejects_local_filter_for_active_non_area_roi(qapp, monkeyp
     dlg.deleteLater()
 
 
-def test_viewer_line_selection_rejected_for_processing(qapp, monkeypatch):
-    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
-
-    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
-    monkeypatch.setattr(ImageViewerDialog, "_refresh_processing_display", lambda self: None)
-
-    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
-    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
-    dlg._raw_arr = np.zeros((8, 8), dtype=float)
-    dlg._on_selection_changed({
-        "kind": "line",
-        "points_frac": [(0.0, 0.0), (1.0, 1.0)],
-    })
-    dlg._scope_cb.setCurrentIndex(1)
-
-    dlg._on_apply_processing()
-
-    assert "display-only" in dlg._status_lbl.text()
-    assert "processing_scope" not in dlg._processing
-
-    dlg.close()
-    dlg.deleteLater()
-
-
-def test_viewer_clear_selection_refreshes_selection_processing(qapp, monkeypatch):
+def test_viewer_reset_clears_roi_filter_scope(qapp, monkeypatch):
     from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
 
     calls = {"refresh": 0}
@@ -521,17 +527,15 @@ def test_viewer_clear_selection_refreshes_selection_processing(qapp, monkeypatch
     dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
     dlg._processing = {
         "processing_scope": "roi",
-        "roi_geometry": {"kind": "ellipse", "rect_px": (1, 1, 6, 6)},
+        "processing_roi_id": "roi-1",
         "smooth_sigma": 1.0,
     }
-    dlg._selection_geometry = {"kind": "ellipse", "rect_px": (1, 1, 6, 6)}
 
-    dlg._on_clear_roi()
+    dlg._on_reset_processing()
 
     assert calls["refresh"] == 1
     assert "processing_scope" not in dlg._processing
-    assert "roi_geometry" not in dlg._processing
-    assert dlg._selection_geometry is None
+    assert "processing_roi_id" not in dlg._processing
 
     dlg.close()
     dlg.deleteLater()
@@ -671,27 +675,35 @@ def test_zoom_label_line_nudge_moves_one_image_pixel_and_emits(qapp):
 
 
 def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
+    from probeflow.core.roi import ROI, ROISet
     from probeflow.gui import ImageViewerDialog
 
     class FakePanel:
         def __init__(self):
             self.empty = None
             self.profile = None
+            self.visible = None
+            self.source = None
 
         def show_empty(self, message="Draw a line to show profile.", theme=None):
             self.empty = message
+
+        def setVisible(self, visible):
+            self.visible = visible
 
         def plot_profile(self, x_vals, values, *, x_label="Distance [nm]",
                          y_label, theme=None):
             self.profile = (np.asarray(x_vals), np.asarray(values), x_label, y_label)
 
-    class FakeZoom:
-        def selection_tool(self):
-            return "line"
+        def set_source_label(self, label, *, theme=None):
+            self.source = label
 
+    roi_set = ROISet(image_id="img1")
+    line = ROI.new("line", {"x1": 0.0, "y1": 2.0, "x2": 4.0, "y2": 2.0})
+    roi_set.add(line)
     dlg = ImageViewerDialog.__new__(ImageViewerDialog)
+    dlg._image_roi_set = roi_set
     dlg._line_profile_panel = FakePanel()
-    dlg._zoom_lbl = FakeZoom()
     dlg._display_arr = np.tile(np.arange(5, dtype=np.float64), (5, 1))
     dlg._raw_arr = None
     dlg._scan_range_m = (5e-9, 5e-9)
@@ -699,10 +711,7 @@ def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
     dlg._current_array_shape = lambda: dlg._display_arr.shape
     dlg._channel_unit = lambda: (1.0, "V", "Test channel")
 
-    dlg._refresh_line_profile({
-        "kind": "line",
-        "points_px": [(0, 2), (4, 2)],
-    })
+    dlg._on_roi_line_profile(line.id)
 
     x_vals, values, x_label, y_label = dlg._line_profile_panel.profile
     # Profile spans 4 pixels × 1 nm/pixel = 4 nm = 40 Å.
@@ -712,6 +721,8 @@ def test_viewer_line_profile_uses_display_array_and_physical_units(qapp):
     assert x_vals[-1] > 0
     np.testing.assert_allclose(values, np.arange(5, dtype=np.float64))
     assert y_label == "Test channel [V]"
+    assert dlg._line_profile_panel.visible is True
+    assert dlg._line_profile_panel.source.startswith("Line ROI:")
 
 
 def test_viewer_active_line_roi_detection(qapp):
@@ -762,14 +773,12 @@ def test_viewer_line_profile_sync_clears_for_non_line_active_roi(qapp):
     dlg._image_roi_set = roi_set
     dlg._line_profile_panel = FakePanel()
     dlg._zoom_lbl = FakeZoom()
-    dlg._line_profile_geometry = {"kind": "line", "points_px": [(0, 0), (1, 1)]}
     dlg._t = {}
 
     dlg._sync_line_profile_visibility()
 
     assert dlg._line_profile_panel.visible is False
     assert dlg._line_profile_panel.empty == "Draw a line to show profile."
-    assert dlg._line_profile_geometry is None
 
 
 def test_viewer_line_profile_sync_uses_active_line_roi(qapp):

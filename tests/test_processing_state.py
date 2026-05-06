@@ -214,8 +214,6 @@ class TestGuiConversion:
         # numeric processing
         "remove_bad_lines": True,
         "align_rows":       "median",
-        "bg_order":         1,
-        "facet_level":      False,
         "smooth_sigma":     None,
         "edge_method":      None,
         "fft_mode":         None,
@@ -238,13 +236,13 @@ class TestGuiConversion:
         gui = {
             "remove_bad_lines": True,
             "align_rows": "mean",
-            "bg_order": 2,
+            "smooth_sigma": 1.5,
         }
         state = processing_state_from_gui(gui)
         op_names = [s.op for s in state.steps]
         assert "remove_bad_lines" in op_names
         assert "align_rows" in op_names
-        assert "plane_bg" in op_names
+        assert "smooth" in op_names
 
     def test_bad_scanline_threshold_and_method_captured(self):
         state = processing_state_from_gui({
@@ -266,7 +264,7 @@ class TestGuiConversion:
         }
 
     def test_false_bool_ops_excluded(self):
-        gui = {"remove_bad_lines": False, "facet_level": False}
+        gui = {"remove_bad_lines": False}
         state = processing_state_from_gui(gui)
         assert len(state.steps) == 0
 
@@ -293,66 +291,6 @@ class TestGuiConversion:
         assert step.op == "fourier_filter"
         assert abs(step.params["cutoff"] - 0.15) < 1e-12
         assert step.params["window"] == "hanning"
-
-    def test_bg_step_tolerance_captured(self):
-        gui = {"bg_order": 2, "bg_step_tolerance": True}
-        state = processing_state_from_gui(gui)
-        assert len(state.steps) == 1
-        step = state.steps[0]
-        assert step.op == "plane_bg"
-        assert step.params == {"order": 2, "step_tolerance": True}
-
-    def test_bg_step_tolerance_defaults_false(self):
-        state = processing_state_from_gui({"bg_order": 1})
-        assert state.steps[0].params["step_tolerance"] is False
-
-    def test_background_fit_rect_captured_for_polynomial_fit(self):
-        state = processing_state_from_gui({
-            "bg_order": 1,
-            "background_fit_rect": (0, 1, 8, 9),
-        })
-        assert len(state.steps) == 1
-        assert state.steps[0].op == "plane_bg"
-        assert state.steps[0].params == {
-            "order": 1,
-            "step_tolerance": False,
-            "fit_rect": (0, 1, 8, 9),
-        }
-
-    def test_bad_background_fit_rect_is_ignored(self):
-        state = processing_state_from_gui({
-            "bg_order": 1,
-            "background_fit_rect": "bad",
-        })
-        assert len(state.steps) == 1
-        assert "fit_rect" not in state.steps[0].params
-
-    def test_background_roi_ids_captured_for_polynomial_fit(self):
-        state = processing_state_from_gui({
-            "bg_order": 1,
-            "background_fit_roi_id": "fit-id",
-            "background_exclude_roi_id": "exclude-id",
-        })
-        assert len(state.steps) == 1
-        assert state.steps[0].op == "plane_bg"
-        assert state.steps[0].params["fit_roi_id"] == "fit-id"
-        assert state.steps[0].params["exclude_roi_id"] == "exclude-id"
-
-    def test_legacy_background_roi_keys_captured(self):
-        state = processing_state_from_gui({
-            "bg_order": 1,
-            "plane_bg_roi_fit": "fit-id",
-            "plane_bg_roi_exclude": "exclude-id",
-        })
-        assert len(state.steps) == 1
-        assert state.steps[0].params["fit_roi_id"] == "fit-id"
-        assert state.steps[0].params["exclude_roi_id"] == "exclude-id"
-
-    def test_stm_line_background_step_tolerant_captured(self):
-        state = processing_state_from_gui({"stm_line_bg": "step_tolerant"})
-        assert len(state.steps) == 1
-        assert state.steps[0].op == "stm_line_bg"
-        assert state.steps[0].params == {"mode": "step_tolerant"}
 
     def test_stm_background_captured(self):
         state = processing_state_from_gui({
@@ -430,15 +368,17 @@ class TestGuiConversion:
             "processing_scope": "roi",
             "roi_rect": (2, 3, 8, 9),
             "align_rows": "median",
-            "bg_order": 1,
-            "stm_line_bg": "step_tolerant",
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
             "smooth_sigma": 1.0,
         }
         state = processing_state_from_gui(gui)
         assert [s.op for s in state.steps] == [
             "align_rows",
-            "plane_bg",
-            "stm_line_bg",
+            "stm_background",
             "roi",
         ]
         assert state.steps[-1].params["step"]["op"] == "smooth"
@@ -552,11 +492,15 @@ class TestGuiConversion:
         gui = {
             "remove_bad_lines": True,
             "align_rows": "median",
-            "bg_order": 1,
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
         }
         state = processing_state_from_gui(gui)
         ops = [s.op for s in state.steps]
-        assert ops == ["remove_bad_lines", "align_rows", "plane_bg"]
+        assert ops == ["remove_bad_lines", "align_rows", "stm_background"]
 
 
 # ── Test E: GUI / export processing equivalence ───────────────────────────────
@@ -573,7 +517,7 @@ class TestGuiExportEquivalence:
         from probeflow.gui import _apply_processing
 
         arr = self._make_arr()
-        gui = {"align_rows": "median", "bg_order": 1}
+        gui = {"align_rows": "median", "smooth_sigma": 0.75}
 
         result_gui    = _apply_processing(arr, gui)
         state         = processing_state_from_gui(gui)
@@ -600,7 +544,7 @@ class TestGuiExportEquivalence:
         from probeflow.processing.gui_adapter import apply_processing_state_to_scan
 
         arr = self._make_arr()
-        gui = {"align_rows": "mean", "bg_order": 2}
+        gui = {"align_rows": "mean", "smooth_sigma": 0.75}
 
         # Build a minimal mock Scan
         scan = MagicMock()

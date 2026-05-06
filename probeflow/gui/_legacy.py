@@ -242,7 +242,6 @@ from probeflow.gui.viewer.widgets import (
     LineProfilePanel,
     RulerWidget,
     ScaleBarWidget,
-    _ZoomLabel,
 )
 from probeflow.gui.image_canvas import ImageCanvas
 from probeflow.gui.roi_manager_dock import ROIManagerDock
@@ -335,9 +334,6 @@ class ImageViewerDialog(QDialog):
         self._scan_format: str = ""
         self._scan_plane_names: list[str] = list(PLANE_NAMES)
         self._scan_plane_units: list[str] = ["m", "m", "A", "A"]
-        self._roi_rect_px: Optional[tuple[int, int, int, int]] = None
-        self._selection_geometry: Optional[dict] = None
-        self._line_profile_geometry: Optional[dict] = None
         self._zero_pick_mode: str = "plane"
         self._zero_plane_points_px: list[tuple[int, int]] = []
         self._zero_markers_hidden = False
@@ -645,7 +641,7 @@ class ImageViewerDialog(QDialog):
         self._scope_cb.setFont(QFont("Helvetica", 8))
         self._scope_cb.setToolTip(
             "ROI filters only: smooth/high-pass/edge/FFT apply inside the "
-            "drawn selection; background and scan-line corrections remain whole-image.")
+            "active area ROI; background and scan-line corrections remain whole-image.")
         sel_col.addWidget(self._scope_cb)
         sel_col.addStretch()
 
@@ -653,7 +649,7 @@ class ImageViewerDialog(QDialog):
         zs_row.addLayout(sel_col, 1)
         right_lay.addLayout(zs_row)
 
-        self._roi_status_lbl = QLabel("Selection: none")
+        self._roi_status_lbl = QLabel("ROI filter scope: whole image")
         self._roi_status_lbl.setFont(QFont("Helvetica", 8))
         self._roi_status_lbl.setWordWrap(True)
         right_lay.addWidget(self._roi_status_lbl)
@@ -821,8 +817,6 @@ class ImageViewerDialog(QDialog):
 
         self._zoom_lbl.marker_clicked.connect(self._on_marker_clicked)
         self._zoom_lbl.pixel_clicked.connect(self._on_set_zero_pick)
-        self._zoom_lbl.selection_preview_changed.connect(self._on_selection_preview_changed)
-        self._zoom_lbl.selection_changed.connect(self._on_selection_changed)
         self._zoom_lbl.pixmap_resized.connect(self._on_pixmap_resized)
         self._zoom_lbl.context_menu_requested.connect(self._on_image_context_menu)
         self._zoom_lbl.pixel_hovered.connect(self._on_pixel_hovered)
@@ -1127,11 +1121,7 @@ class ImageViewerDialog(QDialog):
             event.accept()
             return
 
-        # ── arrow keys: nudge line profile or navigate ────────────────────────
-        if k in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
-            if self._nudge_line_profile(k):
-                event.accept()
-                return
+        # ── arrow keys: navigate between images ──────────────────────────────
         if k == Qt.Key_Left:
             self._go_prev()
         elif k == Qt.Key_Right:
@@ -1158,7 +1148,7 @@ class ImageViewerDialog(QDialog):
         self._refresh_display_array(reset_zoom_if_shape_changed=not reset_zoom)
         self._refresh_histogram_and_markers(entry)
         self._refresh_viewer_pixmap(reset_zoom=reset_zoom)
-        self._refresh_line_profile_from_selection()
+        self._sync_line_profile_visibility()
 
     def _load_current_source(self, entry: SxmFile, reset_zoom: bool = True):
         self._title_lbl.setText(entry.stem)
@@ -1250,7 +1240,7 @@ class ImageViewerDialog(QDialog):
         self._refresh_display_array(reset_zoom_if_shape_changed=True)
         self._refresh_histogram_and_markers(entry)
         self._refresh_viewer_pixmap(reset_zoom=False)
-        self._refresh_line_profile_from_selection()
+        self._sync_line_profile_visibility()
 
     def _on_bad_line_preview_settings_changed(self) -> None:
         if getattr(self, "_bad_line_preview_active", False):
@@ -2069,114 +2059,10 @@ class ImageViewerDialog(QDialog):
         self._line_profile_panel.setVisible(is_line)
         if is_line:
             if active_line_id is not None:
-                # Prefer the ROI-based line profile over the old selection geometry
                 self._on_roi_line_profile(active_line_id)
             else:
-                self._refresh_line_profile_from_selection()
+                self._line_profile_panel.show_empty(theme=self._t)
         else:
-            self._line_profile_geometry = None
-            self._line_profile_panel.show_empty(theme=self._t)
-
-    def _selection_geometry_to_pixels(self, geometry: dict | None) -> dict | None:
-        shape = self._current_array_shape()
-        if not geometry or shape is None:
-            return None
-        Ny, Nx = shape
-        kind = str(geometry.get("kind", ""))
-        if kind not in {"rectangle", "ellipse", "polygon", "line"}:
-            return None
-        out = {"kind": kind}
-        if geometry.get("bounds_frac") is not None:
-            try:
-                x0f, y0f, x1f, y1f = [float(v) for v in geometry["bounds_frac"]]
-            except (TypeError, ValueError):
-                return None
-            x0 = max(0, min(Nx - 1, int(round(min(x0f, x1f) * (Nx - 1)))))
-            x1 = max(0, min(Nx - 1, int(round(max(x0f, x1f) * (Nx - 1)))))
-            y0 = max(0, min(Ny - 1, int(round(min(y0f, y1f) * (Ny - 1)))))
-            y1 = max(0, min(Ny - 1, int(round(max(y0f, y1f) * (Ny - 1)))))
-            if x1 <= x0 or y1 <= y0:
-                return None
-            out["bounds_frac"] = tuple(float(v) for v in geometry["bounds_frac"])
-            out["rect_px"] = (x0, y0, x1, y1)
-        if geometry.get("points_frac") is not None:
-            points_px = []
-            points_frac = []
-            for item in geometry.get("points_frac", ()):
-                try:
-                    xf, yf = float(item[0]), float(item[1])
-                except (TypeError, ValueError, IndexError):
-                    continue
-                xf = max(0.0, min(1.0, xf))
-                yf = max(0.0, min(1.0, yf))
-                points_frac.append((xf, yf))
-                points_px.append((
-                    max(0, min(Nx - 1, int(round(xf * (Nx - 1))))),
-                    max(0, min(Ny - 1, int(round(yf * (Ny - 1))))),
-                ))
-            if out["kind"] == "polygon" and len(points_px) < 3:
-                return None
-            if out["kind"] == "line" and len(points_px) < 2:
-                return None
-            out["points_frac"] = points_frac
-            out["points_px"] = points_px
-        return out
-
-    def _area_selection_geometry_px(self) -> dict | None:
-        geometry = self._selection_geometry
-        if not geometry:
-            return None
-        if geometry.get("kind") == "line":
-            return None
-        return geometry if geometry.get("kind") in {"rectangle", "ellipse", "polygon"} else None
-
-    def _selection_status_text(self, geometry: dict | None) -> str:
-        if not geometry:
-            return "Selection: none"
-        kind = geometry.get("kind", "selection")
-        if kind == "line" and geometry.get("points_px"):
-            (x0, y0), (x1, y1) = geometry["points_px"][:2]
-            return f"Selection: line ({x0}, {y0}) → ({x1}, {y1}); display only"
-        if kind == "polygon" and geometry.get("points_px"):
-            return f"Selection: polygon, {len(geometry['points_px'])} vertices"
-        if geometry.get("rect_px"):
-            x0, y0, x1, y1 = geometry["rect_px"]
-            return (
-                f"Selection: {kind}, x {x0}-{x1}, y {y0}-{y1} "
-                f"({x1 - x0 + 1} x {y1 - y0 + 1} px)"
-            )
-        return f"Selection: {kind}"
-
-    def _on_selection_preview_changed(self, geometry) -> None:
-        converted = self._selection_geometry_to_pixels(dict(geometry or {}))
-        if converted is None or converted.get("kind") != "line":
-            self._line_profile_geometry = None
-            if self._zoom_lbl.selection_tool() == "line":
-                self._line_profile_panel.show_empty(theme=self._t)
-            return
-        self._line_profile_geometry = converted
-        self._refresh_line_profile(converted)
-
-    def _on_selection_changed(self, geometry) -> None:
-        converted = self._selection_geometry_to_pixels(dict(geometry or {}))
-        if converted is None:
-            self._selection_geometry = None
-            self._roi_rect_px = None
-            self._roi_status_lbl.setText("Selection: none")
-            self._line_profile_geometry = None
-            if self._zoom_lbl.selection_tool() == "line":
-                self._line_profile_panel.show_empty(theme=self._t)
-            return
-        self._selection_geometry = converted
-        self._roi_rect_px = (
-            converted.get("rect_px") if converted.get("kind") == "rectangle" else None
-        )
-        self._roi_status_lbl.setText(self._selection_status_text(converted))
-        if converted.get("kind") == "line":
-            self._line_profile_geometry = converted
-            self._refresh_line_profile(converted)
-        elif self._zoom_lbl.selection_tool() == "line":
-            self._line_profile_geometry = None
             self._line_profile_panel.show_empty(theme=self._t)
 
     def _pixel_size_xy_m(self) -> tuple[float, float]:
@@ -2193,92 +2079,6 @@ class ImageViewerDialog(QDialog):
         px_y = h_m / Ny if Ny > 0 and h_m > 0 else 1e-10
         return px_x, px_y
 
-    def _refresh_line_profile_from_selection(self) -> None:
-        if not hasattr(self, "_line_profile_panel"):
-            return
-        if self._zoom_lbl.selection_tool() != "line":
-            return
-        geometry = self._line_profile_geometry
-        if (
-            geometry is None
-            and self._selection_geometry
-            and self._selection_geometry.get("kind") == "line"
-        ):
-            geometry = self._selection_geometry
-        if geometry is None:
-            current = self._zoom_lbl.current_selection()
-            geometry = self._selection_geometry_to_pixels(current) if current else None
-        if geometry is None or geometry.get("kind") != "line":
-            self._line_profile_panel.show_empty(theme=self._t)
-            return
-        self._line_profile_geometry = geometry
-        self._refresh_line_profile(geometry)
-
-    def _refresh_line_profile(self, geometry: dict | None = None) -> None:
-        if not hasattr(self, "_line_profile_panel"):
-            return
-        if self._zoom_lbl.selection_tool() != "line":
-            return
-        arr = self._display_arr
-        geometry = geometry or self._line_profile_geometry
-        if arr is None or not geometry or geometry.get("kind") != "line":
-            self._line_profile_panel.show_empty(theme=self._t)
-            return
-        points = geometry.get("points_px") or []
-        if len(points) < 2:
-            self._line_profile_panel.show_empty(theme=self._t)
-            return
-        try:
-            px_x, px_y = self._pixel_size_xy_m()
-            s_m, values = _proc.line_profile(
-                arr,
-                tuple(points[0]),
-                tuple(points[1]),
-                pixel_size_x_m=px_x,
-                pixel_size_y_m=px_y,
-                width_px=1.0,
-                interp="linear",
-            )
-            scale, unit, axis_label = self._channel_unit()
-            y_label = f"{axis_label} [{unit}]" if unit else axis_label
-            from probeflow.analysis.spec_plot import choose_display_unit
-            x_scale, x_unit = choose_display_unit("m", s_m)
-            x_label = f"Distance [{x_unit}]"
-            self._line_profile_panel.plot_profile(
-                s_m * x_scale,
-                values.astype(np.float64) * scale,
-                x_label=x_label,
-                y_label=y_label,
-                theme=self._t,
-            )
-            if hasattr(self._line_profile_panel, "set_source_label"):
-                self._line_profile_panel.set_source_label(None, theme=self._t)
-        except Exception as exc:
-            self._line_profile_panel.show_empty(
-                f"Profile unavailable: {exc}",
-                theme=self._t,
-            )
-
-    def _nudge_line_profile(self, key: int) -> bool:
-        if not hasattr(self, "_zoom_lbl"):
-            return False
-        if self._zoom_lbl.selection_tool() != "line":
-            return False
-        if not (self._selection_geometry and self._selection_geometry.get("kind") == "line"):
-            return False
-        dx = dy = 0
-        if key == Qt.Key_Left:
-            dx = -1
-        elif key == Qt.Key_Right:
-            dx = 1
-        elif key == Qt.Key_Up:
-            dy = -1
-        elif key == Qt.Key_Down:
-            dy = 1
-        else:
-            return False
-        return self._zoom_lbl.nudge_line(dx, dy, self._current_array_shape())
-
     def _on_set_zero_plane_mode_toggled(self, checked: bool):
         cleared_partial_points = False
         if checked:
@@ -2293,29 +2093,6 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.set_set_zero_mode(checked)
         if cleared_partial_points:
             self._refresh_zero_markers()
-
-    def _on_clear_roi(self):
-        had_processing_selection = any(
-            key in self._processing
-            for key in (
-                "processing_scope",
-                "processing_roi_id",
-                "roi_rect",
-                "roi_geometry",
-            )
-        )
-        self._roi_rect_px = None
-        self._selection_geometry = None
-        self._processing.pop("processing_scope", None)
-        self._processing.pop("processing_roi_id", None)
-        self._processing.pop("roi_rect", None)
-        self._processing.pop("roi_geometry", None)
-        self._zoom_lbl.clear_roi()
-        self._set_selection_tool("none")
-        self._scope_cb.setCurrentIndex(0)
-        self._roi_status_lbl.setText("Selection: none")
-        if had_processing_selection:
-            self._refresh_processing_display()
 
     def _on_set_zero_pick(self, frac_x: float, frac_y: float):
         """Handle image clicks while manual zero-plane mode is active."""
@@ -2688,13 +2465,10 @@ class ImageViewerDialog(QDialog):
             and active_roi.kind in {"rectangle", "ellipse", "polygon", "freehand", "multipolygon"}
             else None
         )
-        wants_filter_roi = (
-            self._scope_cb.currentIndex() == 1
-            or (active_area_roi_id is not None and has_roi_aware_local_filter)
-        )
-        selection_geometry = self._area_selection_geometry_px()
+        wants_filter_roi = self._scope_cb.currentIndex() == 1
         if (
-            active_roi is not None
+            wants_filter_roi
+            and active_roi is not None
             and active_area_roi_id is None
             and has_roi_aware_local_filter
         ):
@@ -2704,17 +2478,8 @@ class ImageViewerDialog(QDialog):
             )
             return
         if wants_filter_roi:
-            if (
-                active_area_roi_id is None
-                and self._selection_geometry
-                and self._selection_geometry.get("kind") == "line"
-            ):
-                self._status_lbl.setText(
-                    "Line selections are display-only; choose an area selection for processing."
-                )
-                return
-            if active_area_roi_id is None and selection_geometry is None:
-                self._status_lbl.setText("Select an area before using selection-based processing.")
+            if active_area_roi_id is None:
+                self._status_lbl.setText("Select an active area ROI before using ROI filters.")
                 return
         # Snapshot for undo before any mutation. Validation has passed; this
         # apply is going to change the state.
@@ -2739,14 +2504,6 @@ class ImageViewerDialog(QDialog):
             self._processing["processing_roi_id"] = active_area_roi_id
             self._processing.pop("roi_rect", None)
             self._processing.pop("roi_geometry", None)
-        elif wants_filter_roi:
-            self._processing["processing_scope"] = "roi"
-            self._processing.pop("processing_roi_id", None)
-            self._processing["roi_geometry"] = dict(selection_geometry)
-            if selection_geometry.get("kind") == "rectangle":
-                self._processing["roi_rect"] = selection_geometry.get("rect_px")
-            else:
-                self._processing.pop("roi_rect", None)
         else:
             self._processing.pop("processing_scope", None)
             self._processing.pop("processing_roi_id", None)
@@ -2757,9 +2514,8 @@ class ImageViewerDialog(QDialog):
 
     def _on_reset_processing(self):
         """Clear all processing for the current image and reload raw data."""
-        has_selection = self._selection_geometry is not None or self._roi_rect_px is not None
         has_zero = bool(self._zero_plane_points_px)
-        if not self._processing and not has_selection and not has_zero:
+        if not self._processing and not has_zero:
             self._status_lbl.setText("Already showing the original — nothing to reset.")
             return
         # Snapshot for undo before clearing.
@@ -2773,12 +2529,9 @@ class ImageViewerDialog(QDialog):
             self._set_zero_plane_btn.setChecked(False)
         self._zero_plane_points_px = []
         self._zero_markers_hidden = False
-        self._roi_rect_px = None
-        self._selection_geometry = None
-        self._zoom_lbl.clear_roi()
         self._set_selection_tool("none")
         self._scope_cb.setCurrentIndex(0)
-        self._roi_status_lbl.setText("Selection: none")
+        self._roi_status_lbl.setText("ROI filter scope: whole image")
         self._refresh_zero_markers()
         self._status_lbl.setText("Reset: showing original on-disk data.")
         self._refresh_processing_display()

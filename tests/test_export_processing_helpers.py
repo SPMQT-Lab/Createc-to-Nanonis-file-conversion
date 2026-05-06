@@ -121,7 +121,6 @@ class TestApplyProcessingStateNoOp:
         scan = _make_scan(plane.copy())
         falsy_state = {k: None for k in NUMERIC_PROC_KEYS}
         falsy_state["remove_bad_lines"] = False
-        falsy_state["facet_level"] = False
         apply_processing_state_to_scan(scan, falsy_state)
         assert scan.processing_history == []
 
@@ -163,28 +162,52 @@ class TestApplyProcessingStateNoOp:
 # ─── Task 3: GUI processing helper — one operation ───────────────────────────
 
 class TestApplyProcessingStateSingleOp:
-    def test_plane_bg_changes_plane(self):
-        # Tilted plane: subtract_background(order=1) should remove the tilt
+    def test_stm_background_changes_scanline_drift(self):
+        # Scan-line drift: linear STM background should remove the row trend.
         y, x = np.mgrid[0:8, 0:8]
-        plane = (x + y).astype(float)
+        plane = y.astype(float)
         scan = _make_scan(plane.copy())
-        apply_processing_state_to_scan(scan, {"bg_order": 1})
-        # After plane subtraction the result should be nearly flat
+        apply_processing_state_to_scan(scan, {
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
+        })
+        # After scan-line background subtraction the result should be nearly flat.
         result = scan.planes[0]
         assert not np.allclose(result, plane), "Plane unchanged — expected modification"
         assert np.std(result) < np.std(plane)
 
-    def test_plane_bg_appends_one_history_entry(self):
+    def test_stm_background_appends_one_history_entry(self):
         scan = _make_scan(np.ones((8, 8)))
-        apply_processing_state_to_scan(scan, {"bg_order": 1})
+        apply_processing_state_to_scan(scan, {
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
+        })
         assert len(scan.processing_history) == 1
 
-    def test_plane_bg_history_op_and_params_correct(self):
+    def test_stm_background_history_op_and_params_correct(self):
         scan = _make_scan(np.ones((8, 8)))
-        apply_processing_state_to_scan(scan, {"bg_order": 2})
+        apply_processing_state_to_scan(scan, {
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
+        })
         entry = scan.processing_history[0]
-        assert entry["op"] == "plane_bg"
-        assert entry["params"] == {"order": 2, "step_tolerance": False}
+        assert entry["op"] == "stm_background"
+        assert entry["params"] == {
+            "fit_region": "whole_image",
+            "line_statistic": "median",
+            "model": "linear",
+            "linear_x_first": False,
+            "preserve_level": "median",
+        }
         assert "timestamp" in entry
 
     def test_align_rows_appends_entry(self):
@@ -250,14 +273,18 @@ class TestApplyProcessingStateMultipleOps:
         scan = _make_scan(plane.copy())
         apply_processing_state_to_scan(scan, {
             "align_rows": "median",
-            "bg_order": 1,
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
         })
         assert len(scan.processing_history) == 2
         assert scan.processing_history[0]["op"] == "align_rows"
-        assert scan.processing_history[1]["op"] == "plane_bg"
+        assert scan.processing_history[1]["op"] == "stm_background"
         assert [step.op for step in scan.processing_state.steps] == [
             "align_rows",
-            "plane_bg",
+            "stm_background",
         ]
 
     def test_three_ops_in_correct_pipeline_order(self):
@@ -276,7 +303,7 @@ class TestApplyProcessingStateMultipleOps:
         scan = _make_scan(plane.copy())
         apply_processing_state_to_scan(scan, {
             "align_rows": "median",
-            "bg_order": 1,
+            "smooth_sigma": 1,
         })
         assert not np.allclose(scan.planes[0], plane)
 
@@ -294,7 +321,14 @@ class TestSxmCommentAfterProcessing:
 
     def test_comment_contains_source_and_ops_after_helper(self, sample_sxm, tmp_path):
         scan = load_scan(sample_sxm)
-        apply_processing_state_to_scan(scan, {"bg_order": 1, "align_rows": "median"})
+        apply_processing_state_to_scan(scan, {
+            "stm_background": {
+                "fit_region": "whole_image",
+                "line_statistic": "median",
+                "model": "linear",
+            },
+            "align_rows": "median",
+        })
         assert len(scan.processing_history) == 2
 
         out = tmp_path / "processed.sxm"
@@ -304,7 +338,7 @@ class TestSxmCommentAfterProcessing:
         comment = hdr.get("COMMENT", "")
         assert f"Source: {sample_sxm.name}" in comment
         assert "Operations:" in comment
-        assert "plane_bg" in comment
+        assert "stm_background" in comment
         assert "align_rows" in comment
 
     def test_no_processing_comment_has_no_operations_section(self, sample_sxm, tmp_path):
