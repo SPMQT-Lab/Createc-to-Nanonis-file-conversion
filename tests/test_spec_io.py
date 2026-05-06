@@ -12,13 +12,13 @@ import pytest
 from probeflow.io.readers.createc_vert import read_createc_vert_report
 from probeflow.io.spectroscopy import SpecData, SpecMetadata, parse_spec_header, read_spec_file, read_spec_metadata
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(__file__).resolve().parent.parent / "test_data"
 
 VERT_TIME_TRACE  = DATA_DIR / "A180201.152542.M0001.VERT"
 VERT_BIAS_SWEEP  = DATA_DIR / "A180201.151737.M0001.VERT"
 VERT_TT_50MV     = DATA_DIR / "A180201.124928.VERT"       # time trace, -50 mV
 VERT_TT_450MV    = DATA_DIR / "A180208.194656.M0003.VERT"  # time trace, -450 mV
-VERT_DIDZ_FIXTURE = Path(__file__).resolve().parent.parent / "anonymised_testdata" / "createc_vert_didz_image_state.VERT"
+VERT_DIDZ_FIXTURE = DATA_DIR / "createc_vert_didz_image_state.VERT"
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────

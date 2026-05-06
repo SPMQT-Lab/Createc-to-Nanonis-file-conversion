@@ -12,7 +12,7 @@ from probeflow.core.scan_loader import load_scan
 from probeflow.core.validation import validate_scan
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 _CREATEC_STEP    = TESTDATA / "createc_scan_step_20nm.dat"
 _CREATEC_TERRACE = TESTDATA / "createc_scan_terrace_109nm.dat"
 _NANONIS_SXM     = TESTDATA / "sxm_moire_10nm.sxm"

@@ -336,7 +336,7 @@ class TestGuiWorkers:
         assert any(tag == "warn" and "1 file(s) failed" in msg for msg, tag in logs)
         assert finished == [str(out_dir)]
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 
 
 @pytest.fixture
@@ -1328,7 +1328,7 @@ class TestSpecItemsToVert:
 # ── Test F: round-trip through real fixtures ──────────────────────────────────
 
 class TestRealFixtureRoundTrip:
-    TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+    TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 
     def test_createc_scans_appear_in_sxm_list(self):
         from probeflow.core.indexing import index_folder
@@ -1359,7 +1359,7 @@ class TestRealFixtureRoundTrip:
 
 
 class TestSpecViewerLifetime:
-    TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+    TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 
     def test_static_unit_controls_survive_load_cleanup(self):
         try:

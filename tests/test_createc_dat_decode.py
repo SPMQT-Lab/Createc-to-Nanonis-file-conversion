@@ -17,7 +17,7 @@ from probeflow.io.readers.createc_dat import (
 )
 from probeflow.core.scan_loader import load_scan
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 QPLUS_10CH_DAT = TESTDATA / "createc_scan_qplus_10ch_afm.dat"
 
 

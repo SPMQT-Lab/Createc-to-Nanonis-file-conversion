@@ -6,7 +6,7 @@ from probeflow.io.file_type import FileType
 from probeflow.core.loaders import identify_scan_file, identify_spectrum_file
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 _CREATEC_SCAN = TESTDATA / "createc_scan_step_20nm.dat"
 _CREATEC_SPEC = TESTDATA / "createc_ivt_telegraph_300mv_a.VERT"
 _NANONIS_SCAN = TESTDATA / "sxm_moire_10nm.sxm"

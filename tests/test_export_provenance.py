@@ -605,7 +605,7 @@ class TestPngNoRegression:
 
         src = (
             Path(__file__).resolve().parents[1]
-            / "anonymised_testdata"
+            / "test_data"
             / "sxm_moire_10nm.sxm"
         )
         out = tmp_path / "moire.png"
@@ -626,7 +626,7 @@ class TestPngNoRegression:
 
         src = (
             Path(__file__).resolve().parents[1]
-            / "anonymised_testdata"
+            / "test_data"
             / "sxm_moire_10nm.sxm"
         )
         out = tmp_path / "moire_processed.png"
@@ -650,7 +650,7 @@ class TestPngNoRegression:
 
         src = (
             Path(__file__).resolve().parents[1]
-            / "anonymised_testdata"
+            / "test_data"
             / "sxm_moire_10nm.sxm"
         )
         out = tmp_path / "aisurf_raw.png"
@@ -669,7 +669,7 @@ class TestPngNoRegression:
 
         src = (
             Path(__file__).resolve().parents[1]
-            / "anonymised_testdata"
+            / "test_data"
             / "sxm_moire_10nm.sxm"
         )
         out = tmp_path / "aisurf_prepared.png"

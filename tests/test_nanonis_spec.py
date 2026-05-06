@@ -11,7 +11,7 @@ from probeflow.io.readers.nanonis_spec import read_nanonis_spec
 from probeflow.io.spectroscopy import SpecMetadata, read_spec_file, read_spec_metadata
 
 
-TESTDATA = Path(__file__).resolve().parents[1] / "anonymised_testdata"
+TESTDATA = Path(__file__).resolve().parents[1] / "test_data"
 
 KELVIN = TESTDATA / "nanonis_kelvin_parabola_500mv.dat"
 STS    = TESTDATA / "nanonis_sts_15mv.dat"

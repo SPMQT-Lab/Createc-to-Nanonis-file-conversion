@@ -274,7 +274,7 @@ class TestApplyProcessingStateMultipleOps:
 class TestSxmCommentAfterProcessing:
     @pytest.fixture
     def sample_sxm(self):
-        p = Path(__file__).parent.parent / "data" / "sample_input" / "sxm"
+        p = Path(__file__).parent.parent / "test_data" / "sample_input" / "sxm"
         files = sorted(p.glob("*.sxm"))
         if not files:
             pytest.skip("No sample .sxm files found")
