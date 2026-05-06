@@ -75,6 +75,37 @@ def test_terminal_widgets_import_from_new_module_and_gui_package(qapp):
     sidebar.close()
 
 
+def test_convert_widgets_import_from_new_module_and_gui_package(qapp):
+    from probeflow.gui import ConvertPanel as PublicPanel
+    from probeflow.gui import ConvertSidebar as PublicSidebar
+    from probeflow.gui.convert import ConvertPanel, ConvertSidebar
+
+    assert PublicPanel is ConvertPanel
+    assert PublicSidebar is ConvertSidebar
+
+    cfg = {
+        "custom_output": True,
+        "input_dir": "/tmp/input",
+        "output_dir": "/tmp/output",
+        "do_png": True,
+        "do_sxm": False,
+        "clip_low": 2.0,
+        "clip_high": 98.5,
+    }
+    panel = ConvertPanel(_theme(), cfg)
+    sidebar = ConvertSidebar(_theme(), cfg)
+
+    assert panel.input_entry.text() == "/tmp/input"
+    assert panel.get_output_dir() == "/tmp/output"
+    assert sidebar.png_cb.isChecked() is True
+    assert sidebar.sxm_cb.isChecked() is False
+    assert sidebar.clip_low_spin.value() == pytest.approx(2.0)
+    assert sidebar.clip_high_spin.value() == pytest.approx(98.5)
+
+    panel.close()
+    sidebar.close()
+
+
 def test_main_window_browse_layout_uses_resizable_splitters(qapp):
     from probeflow.gui import ProbeFlowWindow
 
