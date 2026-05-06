@@ -67,6 +67,54 @@ class ThumbnailLoader(QRunnable):
             self.signals.loaded.emit(self.entry.stem, pil_to_pixmap(img), self.token)
 
 
+# ── Worker: folder preview thumbnails ─────────────────────────────────────────
+class FolderThumbnailSignals(QObject):
+    loaded = Signal(str, list, object)  # folder_key, list[QPixmap | None], token
+
+
+class FolderThumbnailLoader(QRunnable):
+    """Render a small set of preview thumbnails for a subfolder card."""
+
+    def __init__(self, folder_key: str, sample_paths: list[Path],
+                 colormap: str, token, w: int, h: int,
+                 clip_low: float = 1.0, clip_high: float = 99.0,
+                 thumbnail_channel: str = THUMBNAIL_CHANNEL_DEFAULT):
+        super().__init__()
+        self.setAutoDelete(True)
+        self.signals       = FolderThumbnailSignals()
+        self.folder_key    = folder_key
+        self.sample_paths  = list(sample_paths)
+        self.colormap      = colormap
+        self.token         = token
+        self.w             = w
+        self.h             = h
+        self.clip_low      = clip_low
+        self.clip_high     = clip_high
+        self.thumbnail_channel = thumbnail_channel
+
+    def run(self):
+        pixmaps: list = []
+        for path in self.sample_paths:
+            try:
+                scan = load_scan(path)
+                plane_idx = resolve_thumbnail_plane_index(
+                    list(getattr(scan, "plane_names", []) or []),
+                    self.thumbnail_channel,
+                )
+                arr = scan.planes[plane_idx] if plane_idx < scan.n_planes else None
+            except Exception:
+                arr = None
+            img = render_scan_image(
+                arr=arr,
+                colormap=self.colormap,
+                clip_low=self.clip_low,
+                clip_high=self.clip_high,
+                size=(self.w, self.h),
+            )
+            pixmaps.append(pil_to_pixmap(img) if img is not None else None)
+        self.signals.loaded.emit(self.folder_key, pixmaps, self.token)
+
+
 # ── Worker: spec thumbnail ────────────────────────────────────────────────────
 class SpecThumbnailLoader(QRunnable):
     def __init__(self, entry: VertFile, token, w: int, h: int, dark: bool = True):

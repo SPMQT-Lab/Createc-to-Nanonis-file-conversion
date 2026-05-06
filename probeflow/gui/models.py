@@ -87,6 +87,29 @@ class VertFile:
         )
 
 
+@dataclass
+class FolderEntry:
+    """Subfolder summary used by the browse grid for navigation cards."""
+
+    path: Path
+    n_scans: int = 0
+    n_specs: int = 0
+    sample_scan_paths: tuple[Path, ...] = field(default_factory=tuple)
+
+    @property
+    def stem(self) -> str:
+        return self.path.name
+
+    @classmethod
+    def from_index(cls, sub) -> "FolderEntry":
+        return cls(
+            path=sub.path,
+            n_scans=sub.n_scans,
+            n_specs=sub.n_specs,
+            sample_scan_paths=tuple(sub.sample_scan_paths),
+        )
+
+
 def _card_meta_str(entry: SxmFile) -> str:
     """Format key physical parameters for the thumbnail card label.
 

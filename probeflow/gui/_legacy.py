@@ -197,6 +197,7 @@ THEMES = {
 # ── Extracted GUI helpers (re-exported for compatibility) ─────────────────────
 from probeflow.gui.models import (
     PLANE_NAMES,
+    FolderEntry,
     SxmFile,
     VertFile,
     _card_meta_str,
@@ -4071,6 +4072,7 @@ class ProbeFlowWindow(QMainWindow):
         self._grid.selection_changed.connect(self._on_selection_changed)
         self._grid.view_requested.connect(self._open_viewer)
         self._grid.card_context_action.connect(self._on_card_context_action)
+        self._grid.folder_changed.connect(self._on_grid_folder_changed)
         self._browse_tools.colormap_changed.connect(self._on_thumbnail_colormap_changed)
         self._browse_tools.thumbnail_align_changed.connect(self._on_thumbnail_align_changed)
         self._browse_tools.map_spectra_requested.connect(self._on_map_spectra)
@@ -4388,34 +4390,48 @@ class ProbeFlowWindow(QMainWindow):
 
     # ── Browse ─────────────────────────────────────────────────────────────────
     def _open_browse_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "Open folder containing scan / .VERT files")
+        dialog = QFileDialog(self, "Open folder containing scan / .VERT files")
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, False)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+        if not dialog.exec():
+            return
+        selected = dialog.selectedFiles()
+        d = selected[0] if selected else ""
         if not d:
             return
         self._switch_mode("browse")
-        from probeflow.core.indexing import index_folder
-        all_items    = index_folder(Path(d), recursive=True, include_errors=True)
-        sxm_entries  = _scan_items_to_sxm(all_items)
-        vert_entries = _spec_items_to_vert(all_items)
-        n_errors     = sum(1 for it in all_items if it.load_error)
-        entries = sorted(sxm_entries + vert_entries, key=lambda e: e.stem)
-        self._grid.load(entries, folder_path=d)
-        self._n_loaded = len(entries)
-        # New folder → discard previous spec mapping; user can rebuild it.
+        # Shallow navigation: the grid drives indexing. Set the new root and
+        # let the grid render the immediate folder + subfolder cards.
+        self._grid.set_root(Path(d))
+        # New root → discard previous spec mapping; user can rebuild it.
         self._spec_image_map = {}
-        n_sxm  = len(sxm_entries)
-        n_vert = len(vert_entries)
-        parts  = []
+        self._browse_info.clear()
+        self._update_browse_status()
+
+    def _on_grid_folder_changed(self, path: Path):
+        """Status-bar update + clear any selection-driven UI when navigating."""
+        self._browse_info.clear()
+        self._update_browse_status()
+
+    def _update_browse_status(self):
+        entries = self._grid.get_entries()
+        n_folders = sum(1 for e in entries if isinstance(e, FolderEntry))
+        n_sxm     = sum(1 for e in entries if isinstance(e, SxmFile))
+        n_vert    = sum(1 for e in entries if isinstance(e, VertFile))
+        self._n_loaded = n_sxm + n_vert
+        cur = self._grid.current_dir()
+        parts: list[str] = []
+        if n_folders:
+            parts.append(f"{n_folders} folder{'s' if n_folders != 1 else ''}")
         if n_sxm:
             parts.append(f"{n_sxm} scan{'s' if n_sxm != 1 else ''}")
         if n_vert:
             parts.append(f"{n_vert} spec{'s' if n_vert != 1 else ''}")
-        if n_errors:
-            parts.append(f"{n_errors} error{'s' if n_errors != 1 else ''}")
-        desc = ", ".join(parts) if parts else "0 files"
+        desc = ", ".join(parts) if parts else "0 items"
+        loc = cur.name if cur else "?"
         self._status_bar.showMessage(
-            f"Loaded {desc} — Double-click to view  |  "
-            "Thumbnail controls update the whole browse grid")
-        self._browse_info.clear()
+            f"{loc}: {desc} — Double-click a folder to navigate, a scan to view")
 
     def _on_entry_select(self, entry):
         if isinstance(entry, VertFile):

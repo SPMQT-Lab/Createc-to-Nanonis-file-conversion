@@ -8,18 +8,22 @@ from typing import Optional, Union
 from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCursor, QFont, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QScrollArea,
-    QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton,
+    QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from probeflow.gui.models import SxmFile, VertFile, _card_meta_str
+from probeflow.gui.models import FolderEntry, SxmFile, VertFile, _card_meta_str
 from probeflow.gui.rendering import (
     DEFAULT_CMAP_KEY,
     THUMBNAIL_CHANNEL_DEFAULT,
     THUMBNAIL_CHANNEL_OPTIONS,
     resolve_thumbnail_plane_index,
 )
-from probeflow.gui.workers import SpecThumbnailLoader, ThumbnailLoader
+from probeflow.gui.workers import (
+    FolderThumbnailLoader,
+    SpecThumbnailLoader,
+    ThumbnailLoader,
+)
 from probeflow.core.scan_loader import load_scan
 
 # ── Browse cards ──────────────────────────────────────────────────────────────
@@ -152,6 +156,222 @@ class SpecCard(_BrowseCard):
         super().__init__(entry, t, meta, parent=parent)
 
 
+# ── FolderCard ────────────────────────────────────────────────────────────────
+class FolderCard(_BrowseCard):
+    """Card representing a navigable subfolder, with up to 3 preview thumbnails.
+
+    Double-click navigates into the subfolder rather than opening a viewer.
+    """
+
+    folder_activated = Signal(object)  # Path
+
+    NUM_THUMBS = 3
+    THUMB_W    = 56
+    THUMB_H    = 56
+
+    def __init__(self, entry: FolderEntry, t: dict, parent=None):
+        meta_parts = []
+        if entry.n_scans:
+            meta_parts.append(f"{entry.n_scans} scan{'s' if entry.n_scans != 1 else ''}")
+        if entry.n_specs:
+            meta_parts.append(f"{entry.n_specs} spec{'s' if entry.n_specs != 1 else ''}")
+        meta = "  |  ".join(meta_parts) if meta_parts else "(empty)"
+        super().__init__(entry, t, meta, parent=parent)
+
+        # Tag the folder name with a leading icon glyph so users immediately
+        # recognise it as a folder rather than a file in the same grid.
+        self.name_lbl.setText(f"📁  {self.name_lbl.text()}")
+
+        # Replace the single img_lbl with a horizontal strip of small previews.
+        outer_lay = self.layout()
+        idx = outer_lay.indexOf(self.img_lbl)
+        outer_lay.removeWidget(self.img_lbl)
+        self.img_lbl.deleteLater()
+
+        strip = QWidget()
+        strip.setFixedSize(self.IMG_W, self.IMG_H)
+        strip_lay = QHBoxLayout(strip)
+        strip_lay.setContentsMargins(0, 0, 0, 0)
+        strip_lay.setSpacing(6)
+        strip_lay.setAlignment(Qt.AlignCenter)
+
+        self._thumb_lbls: list[QLabel] = []
+        for _ in range(self.NUM_THUMBS):
+            lbl = QLabel()
+            lbl.setFixedSize(self.THUMB_W, self.THUMB_H)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setText("")
+            strip_lay.addWidget(lbl)
+            self._thumb_lbls.append(lbl)
+
+        outer_lay.insertWidget(idx, strip, alignment=Qt.AlignHCenter)
+        self._strip = strip
+        self._refresh_style()
+
+    # FolderCards do not use the single-pixmap API.
+    def set_pixmap(self, pixmap: QPixmap):  # pragma: no cover - intentional no-op
+        return
+
+    def set_thumbnails(self, pixmaps: list):
+        for lbl, pix in zip(self._thumb_lbls, pixmaps):
+            if pix is None:
+                lbl.setText("·")
+                continue
+            lbl.setPixmap(pix.scaled(self.THUMB_W, self.THUMB_H,
+                                     Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            lbl.setText("")
+
+    def _refresh_style(self):
+        super()._refresh_style()
+        # Make the inner thumbnail labels visually distinct from the card bg.
+        t = self._t
+        for lbl in getattr(self, "_thumb_lbls", []):
+            lbl.setStyleSheet(
+                f"background-color: {t['main_bg']};"
+                f"color: {t['sub_fg']};"
+                f"border-radius: 3px;"
+            )
+
+    def mouseDoubleClickEvent(self, event):
+        # Diverge from _BrowseCard: we want navigation, not viewer-open.
+        if event.button() == Qt.LeftButton:
+            self.folder_activated.emit(self.entry.path)
+        # Skip super().mouseDoubleClickEvent to avoid emitting double_clicked.
+
+    def contextMenuEvent(self, event):
+        # No context actions for folders for now.
+        return
+
+
+# ── BreadcrumbBar ─────────────────────────────────────────────────────────────
+class _BreadcrumbBar(QWidget):
+    """Path strip with clickable segments + back/up buttons.
+
+    Segments are clickable and emit ``segment_clicked(Path)``. Back/up buttons
+    emit their own signals so the grid can decide whether they're enabled.
+    """
+
+    segment_clicked = Signal(object)  # Path
+    back_requested  = Signal()
+    up_requested    = Signal()
+
+    def __init__(self, t: dict, parent=None):
+        super().__init__(parent)
+        self._t = t
+        self._root: Optional[Path] = None
+        self._current: Optional[Path] = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setSpacing(4)
+
+        self._back_btn = QPushButton("←")
+        self._back_btn.setFixedSize(24, 24)
+        self._back_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self._back_btn.setEnabled(False)
+        self._back_btn.clicked.connect(self.back_requested)
+        lay.addWidget(self._back_btn)
+
+        self._up_btn = QPushButton("↑")
+        self._up_btn.setFixedSize(24, 24)
+        self._up_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self._up_btn.setEnabled(False)
+        self._up_btn.clicked.connect(self.up_requested)
+        lay.addWidget(self._up_btn)
+
+        self._segments_host = QWidget()
+        self._segments_lay = QHBoxLayout(self._segments_host)
+        self._segments_lay.setContentsMargins(6, 0, 0, 0)
+        self._segments_lay.setSpacing(4)
+        self._segments_lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._segments_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        lay.addWidget(self._segments_host, 1)
+
+        self.setFixedHeight(36)
+        self.apply_theme(t)
+
+    def apply_theme(self, t: dict):
+        self._t = t
+        self.setStyleSheet(f"background-color: {t['main_bg']};")
+        for btn in (self._back_btn, self._up_btn):
+            btn.setStyleSheet(
+                f"QPushButton {{ background-color: {t['card_bg']}; "
+                f"color: {t['fg']}; border: 1px solid {t['sep']}; "
+                f"border-radius: 3px; }}"
+                f"QPushButton:hover:enabled {{ border: 1px solid {t['accent_bg']}; }}"
+                f"QPushButton:disabled {{ color: {t['sub_fg']}; }}"
+            )
+        self._restyle_segments()
+
+    def _restyle_segments(self):
+        t = self._t
+        for i in range(self._segments_lay.count()):
+            w = self._segments_lay.itemAt(i).widget()
+            if isinstance(w, QPushButton):
+                w.setStyleSheet(
+                    f"QPushButton {{ background: transparent; color: {t['fg']}; "
+                    f"border: none; padding: 2px 6px; }}"
+                    f"QPushButton:hover {{ color: {t['accent_bg']}; "
+                    f"text-decoration: underline; }}"
+                )
+            elif isinstance(w, QLabel):
+                w.setStyleSheet(f"color: {t['sub_fg']}; background: transparent;")
+
+    def set_state(self, root: Optional[Path], current: Optional[Path],
+                  *, can_go_back: bool):
+        self._root = root
+        self._current = current
+        self._back_btn.setEnabled(can_go_back)
+        self._up_btn.setEnabled(
+            current is not None and root is not None and current != root
+        )
+        self._rebuild_segments()
+
+    def _clear_segments(self):
+        while self._segments_lay.count():
+            item = self._segments_lay.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+    def _rebuild_segments(self):
+        self._clear_segments()
+        if self._root is None or self._current is None:
+            placeholder = QLabel("No folder open")
+            placeholder.setFont(QFont("Helvetica", 10))
+            self._segments_lay.addWidget(placeholder)
+            self._restyle_segments()
+            return
+
+        # Build relative segment chain: root, then each subdir down to current.
+        try:
+            rel = self._current.relative_to(self._root)
+            tail = [] if str(rel) == "." else list(rel.parts)
+        except ValueError:
+            tail = []
+
+        # Root segment uses the folder name, full chain uses parts.
+        segments: list[tuple[str, Path]] = [(self._root.name or str(self._root), self._root)]
+        cum = self._root
+        for part in tail:
+            cum = cum / part
+            segments.append((part, cum))
+
+        for i, (name, path) in enumerate(segments):
+            if i:
+                sep = QLabel("›")
+                sep.setFont(QFont("Helvetica", 11))
+                self._segments_lay.addWidget(sep)
+            btn = QPushButton(name)
+            btn.setFont(QFont("Helvetica", 10, QFont.Bold if i == len(segments) - 1 else QFont.Normal))
+            btn.setCursor(QCursor(Qt.PointingHandCursor))
+            btn.setFlat(True)
+            btn.clicked.connect(lambda _=False, p=path: self.segment_clicked.emit(p))
+            self._segments_lay.addWidget(btn)
+        self._segments_lay.addStretch(1)
+        self._restyle_segments()
+
+
 # ── ThumbnailGrid ─────────────────────────────────────────────────────────────
 class ThumbnailGrid(QWidget):
     """
@@ -165,6 +385,8 @@ class ThumbnailGrid(QWidget):
     selection_changed = Signal(int)      # count of selected items
     view_requested    = Signal(object)   # SxmFile to open in full-size viewer
     card_context_action = Signal(object, str)  # entry, action key — re-emitted from cards
+    folder_changed    = Signal(object)   # current folder Path (after navigation)
+    root_changed      = Signal(object)   # root folder Path (after open-folder dialog)
 
     GAP = 10
 
@@ -176,6 +398,13 @@ class ThumbnailGrid(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        # ── Breadcrumb bar (back/up + segments) ─────────────────────────────
+        self._breadcrumb = _BreadcrumbBar(t)
+        self._breadcrumb.segment_clicked.connect(self._on_breadcrumb_clicked)
+        self._breadcrumb.back_requested.connect(self._on_back_requested)
+        self._breadcrumb.up_requested.connect(self._on_up_requested)
+        outer.addWidget(self._breadcrumb)
 
         # ── Path strip (folder name + count) ────────────────────────────────
         self._toolbar = QWidget()
@@ -206,8 +435,8 @@ class ThumbnailGrid(QWidget):
         outer.addWidget(self._scroll, 1)
 
         # state
-        self._cards:          dict[str, Union[ScanCard, SpecCard]] = {}
-        self._entries:        list[Union[SxmFile, VertFile]]       = []
+        self._cards:          dict[str, Union[ScanCard, SpecCard, FolderCard]] = {}
+        self._entries:        list[Union[SxmFile, VertFile, FolderEntry]]      = []
         self._selected:       set[str]                         = set()
         self._primary:        Optional[str]                    = None
         self._thumbnail_colormap: str                          = DEFAULT_CMAP_KEY
@@ -218,6 +447,11 @@ class ThumbnailGrid(QWidget):
         self._current_cols: int                                = 1
         self._filter_mode: str                                 = "all"
 
+        # navigation state
+        self._root:        Optional[Path] = None
+        self._current_dir: Optional[Path] = None
+        self._history:     list[Path]     = []  # back stack of previous dirs
+
         # empty-state placeholder
         self._empty_lbl = QLabel("Open a folder to browse SXM scans")
         self._empty_lbl.setAlignment(Qt.AlignCenter)
@@ -225,22 +459,97 @@ class ThumbnailGrid(QWidget):
         self._grid.addWidget(self._empty_lbl, 0, 0)
 
     # ── Public API ────────────────────────────────────────────────────────────
-    def load(self, entries: list[SxmFile], folder_path: str = ""):
-        self._entries         = entries
-        self._selected        = set()
-        self._primary         = None
-        self._load_token      = object()
+    def set_root(self, path: Path):
+        """Set a new browse root (called by 'Open folder…') and navigate to it.
 
+        Resets navigation history and clears any cached selection.
+        """
+        path = Path(path)
+        self._root = path
+        self._history = []
+        self.root_changed.emit(path)
+        self._navigate(path)
+
+    def navigate_to(self, path: Path):
+        """Navigate to *path*, pushing the current folder onto the history."""
+        path = Path(path)
+        if self._current_dir is not None and path != self._current_dir:
+            self._history.append(self._current_dir)
+        self._navigate(path)
+
+    def current_dir(self) -> Optional[Path]:
+        return self._current_dir
+
+    def root(self) -> Optional[Path]:
+        return self._root
+
+    def _navigate(self, path: Path):
+        """Index *path* shallowly and rebuild the grid + breadcrumb."""
+        from probeflow.core.indexing import index_folder_shallow
+        from probeflow.gui.models import (
+            FolderEntry as _FE,
+            _scan_items_to_sxm,
+            _spec_items_to_vert,
+        )
+
+        index = index_folder_shallow(path, include_errors=True)
+        scan_items   = [it for it in index.files if it.item_type == "scan"]
+        spec_items   = [it for it in index.files if it.item_type == "spectrum"]
+        sxm_entries  = _scan_items_to_sxm(scan_items)
+        vert_entries = _spec_items_to_vert(spec_items)
+
+        folder_entries = [_FE.from_index(s) for s in index.subfolders]
+        # Folders sort alphabetically already (from indexing layer); files
+        # follow, sorted by stem like the legacy view.
+        file_entries = sorted(sxm_entries + vert_entries, key=lambda e: e.stem)
+        entries: list[Union[SxmFile, VertFile, FolderEntry]] = list(folder_entries) + list(file_entries)
+
+        self._current_dir = path
+        if self._root is None:
+            self._root = path
+        self._breadcrumb.set_state(
+            self._root, self._current_dir,
+            can_go_back=bool(self._history),
+        )
+        self._render_entries(entries)
+        self.folder_changed.emit(path)
+
+    def load(self, entries: list, folder_path: str = ""):
+        """Legacy entry point: render a flat list of entries (no navigation).
+
+        Kept for backwards compatibility with code paths that already have a
+        prebuilt entry list and don't want shallow folder discovery.
+        """
+        # Reset navigation since this isn't a tree-aware load.
         if folder_path:
             p = Path(folder_path)
-            n_sxm  = sum(1 for e in entries if isinstance(e, SxmFile))
-            n_vert = sum(1 for e in entries if isinstance(e, VertFile))
+            self._root = p
+            self._current_dir = p
+            self._history = []
+            self._breadcrumb.set_state(p, p, can_go_back=False)
+        self._render_entries(entries)
+
+    def _render_entries(self, entries: list):
+        self._entries    = entries
+        self._selected   = set()
+        self._primary    = None
+        self._load_token = object()
+
+        n_folders = sum(1 for e in entries if isinstance(e, FolderEntry))
+        n_sxm     = sum(1 for e in entries if isinstance(e, SxmFile))
+        n_vert    = sum(1 for e in entries if isinstance(e, VertFile))
+        if self._current_dir is not None:
             parts = []
+            if n_folders:
+                parts.append(f"{n_folders} folder{'s' if n_folders != 1 else ''}")
             if n_sxm:
                 parts.append(f"{n_sxm} scan{'s' if n_sxm != 1 else ''}")
             if n_vert:
                 parts.append(f"{n_vert} spec{'s' if n_vert != 1 else ''}")
-            self._path_lbl.setText(f"{p.name}  ({', '.join(parts) if parts else '0 files'})")
+            self._path_lbl.setText(
+                f"{self._current_dir.name}  "
+                f"({', '.join(parts) if parts else '0 items'})"
+            )
 
         # clear grid
         while self._grid.count():
@@ -250,7 +559,7 @@ class ThumbnailGrid(QWidget):
         self._cards = {}
 
         if not entries:
-            self._empty_lbl = QLabel("No .sxm or .VERT files found in this folder")
+            self._empty_lbl = QLabel("No scans, spectra, or subfolders here")
             self._empty_lbl.setAlignment(Qt.AlignCenter)
             self._empty_lbl.setFont(QFont("Helvetica", 12))
             self._grid.addWidget(self._empty_lbl, 0, 0)
@@ -259,29 +568,82 @@ class ThumbnailGrid(QWidget):
         cols = self._calc_cols()
         self._current_cols = cols
         for entry in entries:
-            if isinstance(entry, VertFile):
+            key = self._key_for(entry)
+            if isinstance(entry, FolderEntry):
+                card = FolderCard(entry, self._t)
+                card.folder_activated.connect(self._on_folder_activated)
+            elif isinstance(entry, VertFile):
                 card = SpecCard(entry, self._t)
             else:
                 card = ScanCard(entry, self._t)
                 card.context_action_requested.connect(self.card_context_action)
             card.clicked.connect(self._on_card_click)
             card.double_clicked.connect(self._on_card_dbl)
-            self._cards[entry.stem] = card
+            self._cards[key] = card
 
-        # Populate the grid honouring the current filter (fresh loads default
-        # to the filter previously set via apply_filter()).
+        # Populate the grid honouring the current filter.
         self._relayout_filtered()
 
-        # load all thumbnails
+        # Queue async thumbnail rendering for every card.
         token = self._load_token
         for entry in entries:
-            if isinstance(entry, VertFile):
+            if isinstance(entry, FolderEntry):
+                if entry.sample_scan_paths:
+                    loader = FolderThumbnailLoader(
+                        str(entry.path),
+                        list(entry.sample_scan_paths),
+                        self._thumbnail_colormap,
+                        token,
+                        FolderCard.THUMB_W, FolderCard.THUMB_H,
+                        self._thumbnail_clip[0], self._thumbnail_clip[1],
+                        thumbnail_channel=self._thumbnail_channel,
+                    )
+                    loader.signals.loaded.connect(self._on_folder_thumbs)
+                    self._pool.start(loader)
+            elif isinstance(entry, VertFile):
                 loader = SpecThumbnailLoader(entry, token,
                                              SpecCard.IMG_W, SpecCard.IMG_H)
+                loader.signals.loaded.connect(self._on_thumb)
+                self._pool.start(loader)
             else:
                 loader = self._make_thumbnail_loader(entry, token)
-            loader.signals.loaded.connect(self._on_thumb)
-            self._pool.start(loader)
+                loader.signals.loaded.connect(self._on_thumb)
+                self._pool.start(loader)
+
+    @staticmethod
+    def _key_for(entry) -> str:
+        """Stable per-entry key for the _cards dict.
+
+        Folders use ``folder:<path>`` so a subfolder named the same as a sibling
+        scan stem can never collide.
+        """
+        if isinstance(entry, FolderEntry):
+            return f"folder:{entry.path}"
+        return entry.stem
+
+    def _on_breadcrumb_clicked(self, path: Path):
+        if self._current_dir is not None and path != self._current_dir:
+            self._history.append(self._current_dir)
+            self._navigate(path)
+
+    def _on_back_requested(self):
+        if not self._history:
+            return
+        previous = self._history.pop()
+        self._navigate(previous)
+
+    def _on_up_requested(self):
+        if self._current_dir is None or self._root is None:
+            return
+        if self._current_dir == self._root:
+            return
+        parent = self._current_dir.parent
+        if self._current_dir != parent:
+            self._history.append(self._current_dir)
+            self._navigate(parent)
+
+    def _on_folder_activated(self, path):
+        self.navigate_to(Path(path))
 
     def _make_thumbnail_loader(self, entry: SxmFile, token) -> ThumbnailLoader:
         clip_low, clip_high = self._thumbnail_clip
@@ -295,12 +657,28 @@ class ThumbnailGrid(QWidget):
         token = self._load_token
         count = 0
         for entry in self._entries:
-            if not isinstance(entry, SxmFile) or entry.stem not in self._cards:
-                continue
-            loader = self._make_thumbnail_loader(entry, token)
-            loader.signals.loaded.connect(self._on_thumb)
-            self._pool.start(loader)
-            count += 1
+            if isinstance(entry, SxmFile):
+                if entry.stem not in self._cards:
+                    continue
+                loader = self._make_thumbnail_loader(entry, token)
+                loader.signals.loaded.connect(self._on_thumb)
+                self._pool.start(loader)
+                count += 1
+            elif isinstance(entry, FolderEntry) and entry.sample_scan_paths:
+                key = self._key_for(entry)
+                if key not in self._cards:
+                    continue
+                loader = FolderThumbnailLoader(
+                    str(entry.path),
+                    list(entry.sample_scan_paths),
+                    self._thumbnail_colormap,
+                    token,
+                    FolderCard.THUMB_W, FolderCard.THUMB_H,
+                    self._thumbnail_clip[0], self._thumbnail_clip[1],
+                    thumbnail_channel=self._thumbnail_channel,
+                )
+                loader.signals.loaded.connect(self._on_folder_thumbs)
+                self._pool.start(loader)
         return count
 
     def set_thumbnail_colormap(self, colormap_key: str) -> int:
@@ -362,6 +740,7 @@ class ThumbnailGrid(QWidget):
         self._content.setStyleSheet(f"background-color: {t['main_bg']};")
         self._toolbar.setStyleSheet(f"background-color: {t['main_bg']};")
         self._path_lbl.setStyleSheet(f"color: {t['sub_fg']}; background: transparent;")
+        self._breadcrumb.apply_theme(t)
         for card in self._cards.values():
             card.apply_theme(t)
 
@@ -374,35 +753,55 @@ class ThumbnailGrid(QWidget):
         if card:
             card.set_pixmap(pixmap)
 
-    def _on_card_click(self, entry: SxmFile, ctrl: bool):
+    @Slot(str, list, object)
+    def _on_folder_thumbs(self, folder_key: str, pixmaps: list, token):
+        if token is not self._load_token:
+            return
+        key = f"folder:{folder_key}"
+        card = self._cards.get(key)
+        if isinstance(card, FolderCard):
+            card.set_thumbnails(pixmaps)
+
+    def _on_card_click(self, entry, ctrl: bool):
+        # Folders are not selectable — selecting one would have no effect on
+        # the info panel and would just confuse the file selection state.
+        if isinstance(entry, FolderEntry):
+            return
+        stem = entry.stem
         if ctrl:
             # toggle this card in/out of selection
-            if entry.stem in self._selected:
-                self._selected.discard(entry.stem)
-                self._cards[entry.stem].set_selected(False)
+            if stem in self._selected:
+                self._selected.discard(stem)
+                self._cards[stem].set_selected(False)
                 self._primary = next(iter(self._selected), None) if self._selected else None
             else:
-                self._selected.add(entry.stem)
-                self._cards[entry.stem].set_selected(True)
-                self._primary = entry.stem
+                self._selected.add(stem)
+                self._cards[stem].set_selected(True)
+                self._primary = stem
         else:
             # single select: deselect all others
-            for stem in list(self._selected):
-                c = self._cards.get(stem)
+            for s in list(self._selected):
+                c = self._cards.get(s)
                 if c:
                     c.set_selected(False)
-            self._selected = {entry.stem}
-            self._primary  = entry.stem
-            self._cards[entry.stem].set_selected(True)
+            self._selected = {stem}
+            self._primary  = stem
+            self._cards[stem].set_selected(True)
 
         self.selection_changed.emit(len(self._selected))
         if self._primary:
             primary_entry = next(
-                (e for e in self._entries if e.stem == self._primary), None)
+                (e for e in self._entries
+                 if not isinstance(e, FolderEntry) and e.stem == self._primary),
+                None)
             if primary_entry:
                 self.entry_selected.emit(primary_entry)
 
-    def _on_card_dbl(self, entry: SxmFile):
+    def _on_card_dbl(self, entry):
+        # FolderCard emits its own folder_activated signal; the generic
+        # double_clicked path is only for files.
+        if isinstance(entry, FolderEntry):
+            return
         self.view_requested.emit(entry)
 
     # ── Layout helpers ─────────────────────────────────────────────────────────
@@ -438,6 +837,9 @@ class ThumbnailGrid(QWidget):
         self._relayout_filtered()
 
     def _is_entry_visible(self, entry) -> bool:
+        # Folders are navigation aids; never hide them based on a file filter.
+        if isinstance(entry, FolderEntry):
+            return True
         mode = self._filter_mode
         if mode == "images":
             return isinstance(entry, SxmFile)
@@ -464,7 +866,7 @@ class ThumbnailGrid(QWidget):
 
         i = 0
         for entry in self._entries:
-            card = self._cards.get(entry.stem)
+            card = self._cards.get(self._key_for(entry))
             if not card or not self._is_entry_visible(entry):
                 continue
             row, col = divmod(i, cols)

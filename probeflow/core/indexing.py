@@ -251,3 +251,125 @@ def split_indexed_items(
 def image_browser_items(items: list[ProbeFlowItem]) -> list[ProbeFlowItem]:
     """Return only non-errored scan items — what the image browser should show."""
     return [it for it in items if it.item_type == "scan" and not it.load_error]
+
+
+# ── Shallow (folder-by-folder) browsing ───────────────────────────────────────
+
+@dataclass(frozen=True)
+class SubfolderEntry:
+    """Lightweight summary of an immediate subfolder for the browse grid."""
+
+    path: Path
+    name: str
+    n_scans: int                          # scan files found within peek depth
+    n_specs: int                          # spectroscopy files found within peek depth
+    sample_scan_paths: tuple[Path, ...]   # up to 3 paths for preview thumbnails
+
+
+@dataclass(frozen=True)
+class ShallowFolderIndex:
+    """Result of a non-recursive folder index: files at this level + subfolders."""
+
+    folder: Path
+    files: list[ProbeFlowItem]
+    subfolders: list[SubfolderEntry]
+
+
+def _peek_subfolder(
+    folder: Path,
+    *,
+    max_samples: int = 3,
+    peek_depth: int = 2,
+) -> SubfolderEntry:
+    """Briefly scan *folder* (BFS, capped by peek_depth) for counts and samples.
+
+    Bounded so users get a meaningful preview even for nested experiment trees,
+    without paying for a full recursive walk.
+    """
+    n_scans = 0
+    n_specs = 0
+    samples: list[Path] = []
+    queue: list[tuple[Path, int]] = [(folder, 0)]
+
+    while queue:
+        current, depth = queue.pop(0)
+        try:
+            entries = sorted(current.iterdir())
+        except (OSError, PermissionError):
+            continue
+        for p in entries:
+            if p.name.startswith(".") or p.name in _SKIP_DIRS:
+                continue
+            try:
+                is_file = p.is_file()
+                is_dir = p.is_dir()
+            except OSError:
+                continue
+            if is_file:
+                ft = sniff_file_type(p)
+                if ft in (FileType.CREATEC_IMAGE, FileType.NANONIS_IMAGE):
+                    n_scans += 1
+                    if len(samples) < max_samples:
+                        samples.append(p)
+                elif ft in (FileType.CREATEC_SPEC, FileType.NANONIS_SPEC):
+                    n_specs += 1
+            elif is_dir and depth < peek_depth:
+                queue.append((p, depth + 1))
+
+    return SubfolderEntry(
+        path=folder,
+        name=folder.name,
+        n_scans=n_scans,
+        n_specs=n_specs,
+        sample_scan_paths=tuple(samples),
+    )
+
+
+def index_folder_shallow(
+    folder,
+    *,
+    include_errors: bool = True,
+) -> ShallowFolderIndex:
+    """Return immediate files + immediate subfolders of *folder* (no recursion).
+
+    Each subfolder is summarised with counts and up to 3 sample scan paths
+    (gathered via a depth-limited peek) so a folder card can show preview
+    thumbnails of what's inside without fully indexing the subtree.
+    """
+    folder = Path(folder)
+    if not folder.exists():
+        raise ValueError(f"Folder does not exist: {folder}")
+    if not folder.is_dir():
+        raise ValueError(f"Path is not a directory: {folder}")
+
+    files: list[ProbeFlowItem] = []
+    subfolders: list[SubfolderEntry] = []
+
+    try:
+        entries = sorted(folder.iterdir())
+    except (OSError, PermissionError):
+        entries = []
+
+    for p in entries:
+        if p.name.startswith(".") or p.name in _SKIP_DIRS:
+            continue
+        try:
+            is_file = p.is_file()
+            is_dir = p.is_dir()
+        except OSError:
+            continue
+        if is_file:
+            ft = sniff_file_type(p)
+            if ft not in _FORMAT_MAP:
+                continue
+            source_format, item_type = _FORMAT_MAP[ft]
+            item = _build_item(p, source_format, item_type)
+            if item.load_error is not None and not include_errors:
+                continue
+            files.append(item)
+        elif is_dir:
+            subfolders.append(_peek_subfolder(p))
+
+    files.sort(key=lambda it: (it.acquisition_datetime or "", it.path.name))
+    subfolders.sort(key=lambda s: s.name.lower())
+    return ShallowFolderIndex(folder=folder, files=files, subfolders=subfolders)
