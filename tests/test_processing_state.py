@@ -471,36 +471,6 @@ class TestGuiConversion:
             "radius_px": 4.0,
         }
 
-    def test_patch_interpolate_gui_state_captured(self):
-        state = processing_state_from_gui({
-            "patch_interpolate_rect": (3, 4, 8, 9),
-            "patch_interpolate_iterations": 50,
-        })
-        assert len(state.steps) == 1
-        assert state.steps[0].op == "patch_interpolate"
-        assert state.steps[0].params == {
-            "rect": (3, 4, 8, 9),
-            "method": "line_fit",
-            "iterations": 50,
-        }
-
-    def test_patch_interpolate_gui_shape_geometry_captured(self):
-        geometry = {
-            "kind": "polygon",
-            "points_px": [(3, 4), (8, 4), (5, 9)],
-        }
-        state = processing_state_from_gui({
-            "patch_interpolate_geometry": geometry,
-            "patch_interpolate_iterations": 50,
-        })
-        assert len(state.steps) == 1
-        assert state.steps[0].op == "patch_interpolate"
-        assert state.steps[0].params == {
-            "geometry": geometry,
-            "method": "line_fit",
-            "iterations": 50,
-        }
-
     def test_roi_scope_wraps_soft_border_fft(self):
         gui = {
             "processing_scope": "roi",

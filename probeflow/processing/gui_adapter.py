@@ -40,10 +40,6 @@ NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "fft_soft_border",
     "periodic_notches",
     "periodic_notch_radius",
-    "patch_interpolate_rect",
-    "patch_interpolate_geometry",
-    "patch_interpolate_method",
-    "patch_interpolate_iterations",
     "linear_undistort",
     "set_zero_xy",
     "set_zero_plane_points",
@@ -216,34 +212,6 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
             "sigma":  float(gui_state.get("edge_sigma",  1.0)),
             "sigma2": float(gui_state.get("edge_sigma2", 2.0)),
         }))
-
-    patch_rect = gui_state.get("patch_interpolate_rect")
-    patch_geometry = gui_state.get("patch_interpolate_geometry")
-    if _area_geometry(patch_geometry):
-        params = {
-            "geometry": dict(patch_geometry),
-            "method": str(gui_state.get("patch_interpolate_method", "line_fit")),
-            "iterations": int(gui_state.get("patch_interpolate_iterations", 200)),
-        }
-        if patch_geometry.get("kind") == "rectangle":
-            try:
-                rect = tuple(int(v) for v in patch_geometry.get("rect_px", ()))
-                if len(rect) == 4:
-                    params["rect"] = rect
-            except (TypeError, ValueError):
-                pass
-        _append_step(ProcessingStep("patch_interpolate", params))
-    elif patch_rect is not None:
-        try:
-            patch_rect_tuple = tuple(int(v) for v in patch_rect)
-        except (TypeError, ValueError):
-            patch_rect_tuple = ()
-        if len(patch_rect_tuple) == 4:
-            _append_step(ProcessingStep("patch_interpolate", {
-                "rect": patch_rect_tuple,
-                "method": str(gui_state.get("patch_interpolate_method", "line_fit")),
-                "iterations": int(gui_state.get("patch_interpolate_iterations", 200)),
-            }))
 
     fft_mode = gui_state.get("fft_mode")
     if fft_mode is not None:

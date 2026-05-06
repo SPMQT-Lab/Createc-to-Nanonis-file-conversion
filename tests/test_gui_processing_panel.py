@@ -43,7 +43,7 @@ def test_browse_quick_panel_emits_only_thumbnail_corrections(qapp):
 
 
 def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
-    from PySide6.QtWidgets import QLabel, QPushButton
+    from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton
     from probeflow.gui import ProcessingControlPanel
 
     panel = ProcessingControlPanel("viewer_full")
@@ -58,9 +58,6 @@ def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
         "highpass_sigma": 12,
         "edge_method": "dog",
         "edge_sigma": 4,
-        "fft_mode": "high_pass",
-        "fft_cutoff": 0.25,
-        "fft_soft_border": True,
     })
 
     state = panel.state()
@@ -76,13 +73,12 @@ def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
     assert state["edge_method"] == "dog"
     assert state["edge_sigma"] == 4
     assert state["edge_sigma2"] == 8
-    assert state["fft_mode"] == "high_pass"
-    assert state["fft_cutoff"] == 0.25
-    assert state["fft_soft_border"] is True
-    labels = {label.text() for label in panel.findChildren(QLabel)}
-    assert "Background" in labels
+    labels = [label.text() for label in panel.findChildren(QLabel)]
+    assert labels.index("Line corrections") < labels.index("Background") < labels.index("Filters")
     assert "Simple background" not in labels
+    assert "Radial FFT" not in labels
     assert "Line offset:" not in labels
+    assert not any(cb.text() == "Soft border" for cb in panel.findChildren(QCheckBox))
     assert any(
         btn.text() == "STM Background..."
         for btn in panel.findChildren(QPushButton)
@@ -90,6 +86,7 @@ def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
 
 
 def test_viewer_dialog_keeps_standard_processing_visible(qapp, monkeypatch):
+    from PySide6.QtWidgets import QCheckBox
     from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
 
     monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
@@ -111,7 +108,11 @@ def test_viewer_dialog_keeps_standard_processing_visible(qapp, monkeypatch):
     assert labels["rectangle"] == "▭ Rect"
     assert labels["line"] == "— Line"
     assert dlg._set_zero_plane_btn.isHidden() is False
+    assert not hasattr(dlg, "_patch_roi_cb")
+    assert not any(cb.text() == "Patch selection" for cb in dlg.findChildren(QCheckBox))
     assert dlg._advanced_widget.isHidden() is True
+    assert dlg._advanced_fft_combo.currentText() == "None"
+    assert dlg._advanced_fft_soft_cb.text() == "Soft border"
     assert dlg._spec_overlay_widget.isHidden() is True
     assert dlg._spec_show_cb.isChecked() is False
     assert dlg._export_widget.isHidden() is True
@@ -137,7 +138,6 @@ def test_viewer_dialog_layout_prioritises_image_and_bounds_side_panels(qapp, mon
     assert dlg._canvas.minimumHeight() == 140
     assert dlg._canvas.maximumHeight() == 140
     assert dlg._canvas.sizePolicy().verticalPolicy().name == "Fixed"
-    assert dlg._processing_panel._TWO_COL_THRESHOLD == 360
 
     dlg.close()
     dlg.deleteLater()
@@ -179,6 +179,10 @@ def test_viewer_dialog_menus_mirror_existing_controls(qapp, monkeypatch):
 
     action("Processing", "Gaussian").trigger()
     assert dlg._processing_panel._smooth_combo.currentText() == "Gaussian"
+    with pytest.raises(AssertionError):
+        action("Processing", "Radial FFT")
+    with pytest.raises(AssertionError):
+        action("Processing", "FFT soft border")
     assert action("Processing", "STM Background...").isEnabled() is True
     dlg._display_arr = np.ones((8, 8), dtype=float)
     action("Processing", "STM Background...").trigger()
@@ -224,6 +228,35 @@ def test_viewer_dialog_menus_mirror_existing_controls(qapp, monkeypatch):
     definitions_dialog.close()
     qapp.processEvents()
     assert dlg.isVisible()
+
+    dlg.close()
+    dlg.deleteLater()
+
+
+def test_viewer_align_rows_applies_immediately(qapp, monkeypatch):
+    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
+
+    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+    refreshes = []
+    monkeypatch.setattr(
+        ImageViewerDialog,
+        "_refresh_processing_display",
+        lambda self: refreshes.append(dict(self._processing)),
+    )
+
+    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
+    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+
+    dlg._processing_panel._align_combo.setCurrentText("Mean")
+
+    assert dlg._processing["align_rows"] == "mean"
+    assert refreshes[-1]["align_rows"] == "mean"
+    assert dlg._proc_undo_stack[-1] == {}
+
+    dlg._processing_panel._align_combo.setCurrentText("None")
+
+    assert "align_rows" not in dlg._processing
+    assert refreshes[-1] == {}
 
     dlg.close()
     dlg.deleteLater()
@@ -376,6 +409,9 @@ def test_viewer_apply_merges_standard_and_advanced_processing(qapp, monkeypatch)
     dlg._processing_panel.set_state({"align_rows": "median"})
     dlg._undistort_shear_spin.setValue(3.0)
     dlg._undistort_scale_spin.setValue(1.10)
+    dlg._advanced_fft_combo.setCurrentText("High-pass")
+    dlg._advanced_fft_cutoff_spin.setValue(0.25)
+    dlg._advanced_fft_soft_cb.setChecked(True)
 
     dlg._on_apply_processing()
 
@@ -384,6 +420,10 @@ def test_viewer_apply_merges_standard_and_advanced_processing(qapp, monkeypatch)
     assert dlg._processing["linear_undistort"] is True
     assert dlg._processing["undistort_shear_x"] == 3.0
     assert dlg._processing["undistort_scale_y"] == 1.10
+    assert dlg._processing["fft_mode"] == "high_pass"
+    assert dlg._processing["fft_cutoff"] == 0.25
+    assert dlg._processing["fft_soft_border"] is True
+    assert dlg._processing["fft_soft_mode"] == "high_pass"
 
     dlg.close()
     dlg.deleteLater()

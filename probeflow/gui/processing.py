@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QResizeEvent
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton,
     QSizePolicy, QSlider, QVBoxLayout, QWidget,
@@ -27,27 +27,6 @@ class ProcessingControlPanel(QWidget):
             raise ValueError(f"Unknown processing panel mode: {mode}")
         self._mode = mode
         self._build()
-
-    _TWO_COL_THRESHOLD = 360  # px — switch to 1-col below this panel width
-
-    def resizeEvent(self, event: "QResizeEvent"):
-        super().resizeEvent(event)
-        if not hasattr(self, "_two_col"):
-            return
-        use_two_col = event.size().width() >= self._TWO_COL_THRESHOLD
-        if use_two_col == self._using_two_col:
-            return
-        self._using_two_col = use_two_col
-        hbox = self._two_col.layout()
-        if use_two_col:
-            # Move bg_section back into the right half of two_col
-            hbox.addWidget(self._bg_section, 1)
-        else:
-            # Pull bg_section out of two_col, place it below in the main column
-            hbox.removeWidget(self._bg_section)
-            idx = self._lay.indexOf(self._two_col)
-            self._lay.insertWidget(idx + 1, self._bg_section)
-        self._bg_section.show()
 
     def _build(self):
         self._lay = QVBoxLayout(self)
@@ -222,7 +201,23 @@ class ProcessingControlPanel(QWidget):
             self.bad_line_preview_requested.emit)
         self._sync_bad_line_controls()
 
-        # ── Filter section (left column / full-width in 1-col) ────────────────
+        # ── Background opens its own preview/apply dialog ─────────────────────
+        self._bg_section = QWidget()
+        R = QVBoxLayout(self._bg_section)
+        R.setContentsMargins(0, 0, 0, 0)
+        R.setSpacing(3)
+
+        _col_lbl("Background", R)
+        self._stm_background_btn = QPushButton("STM Background...")
+        self._stm_background_btn.setFont(QFont("Helvetica", 8))
+        self._stm_background_btn.setToolTip(
+            "Open the ImageJ-style scan-line background tool with profile and image previews."
+        )
+        self._stm_background_btn.clicked.connect(self.stm_background_requested.emit)
+        R.addWidget(self._stm_background_btn)
+        lay.addWidget(self._bg_section)
+
+        # ── In-panel filters wait for Apply processing ────────────────────────
         self._filter_section = QWidget()
         L = QVBoxLayout(self._filter_section)
         L.setContentsMargins(0, 0, 0, 0)
@@ -257,54 +252,8 @@ class ProcessingControlPanel(QWidget):
         self._edge_combo.currentIndexChanged.connect(
             lambda i: self._edge_sigma_w.setVisible(i != 0))
 
-        _col_lbl("Radial FFT", L)
-
-        self._fft_combo = _combo_row("Mode:", ["None", "Low-pass", "High-pass"], L, 54)
-        self._fft_combo.setToolTip(
-            "Simple global radial low/high-pass filter. "
-            "This is not the ImageJ Periodic Filter workflow."
-        )
-        self._fft_cutoff_widget, self._fft_sl, _ = _sub_slider(
-            "cutoff:", 1, 50, 10, "{v}%")
-        L.addWidget(self._fft_cutoff_widget)
-        self._fft_cutoff_widget.setVisible(False)
-        self._fft_combo.currentIndexChanged.connect(
-            lambda i: self._fft_cutoff_widget.setVisible(i != 0))
-
-        self._fft_soft_cb = QCheckBox("Soft border")
-        self._fft_soft_cb.setFont(QFont("Helvetica", 8))
-        self._fft_soft_cb.setToolTip(
-            "Cosine-taper the image edges before FFT to suppress ringing artefacts "
-            "(ImageJ FFT_Soft_Border approach)."
-        )
-        L.addWidget(self._fft_soft_cb)
         L.addStretch()
-
-        # ── Background section (right column / below filters in 1-col) ────────
-        self._bg_section = QWidget()
-        R = QVBoxLayout(self._bg_section)
-        R.setContentsMargins(0, 0, 0, 0)
-        R.setSpacing(3)
-
-        _col_lbl("Background", R)
-        self._stm_background_btn = QPushButton("STM Background...")
-        self._stm_background_btn.setFont(QFont("Helvetica", 8))
-        self._stm_background_btn.setToolTip(
-            "Open the ImageJ-style scan-line background tool with profile and image previews."
-        )
-        self._stm_background_btn.clicked.connect(self.stm_background_requested.emit)
-        R.addWidget(self._stm_background_btn)
-        R.addStretch()
-
-        # ── Two-column container (2-col mode: filter | bg side by side) ───────
-        self._two_col = QWidget()
-        hbox = QHBoxLayout(self._two_col)
-        hbox.setContentsMargins(0, 2, 0, 0)
-        hbox.setSpacing(4)
-        hbox.addWidget(self._filter_section, 1)
-        hbox.addWidget(self._bg_section, 1)
-        lay.addWidget(self._two_col)
-        self._using_two_col = True
+        lay.addWidget(self._filter_section)
 
     def state(self) -> dict:
         align_map = {0: None, 1: "median", 2: "mean"}
@@ -316,12 +265,10 @@ class ProcessingControlPanel(QWidget):
         if self._mode == "browse_quick":
             return {k: cfg[k] for k in self.QUICK_KEYS}
 
-        fft_map = {0: None, 1: "low_pass", 2: "high_pass"}
         edge_map = {0: None, 1: "laplacian", 2: "log", 3: "dog"}
         smooth_i = self._smooth_combo.currentIndex()
         highpass_i = self._highpass_combo.currentIndex()
         edge_i = self._edge_combo.currentIndex()
-        fft_idx = self._fft_combo.currentIndex()
         cfg.update({
             "remove_bad_lines_threshold": (
                 self._bad_line_threshold_spin.value()
@@ -341,20 +288,15 @@ class ProcessingControlPanel(QWidget):
             "edge_method": edge_map[edge_i],
             "edge_sigma": self._edge_sigma_sl.value(),
             "edge_sigma2": self._edge_sigma_sl.value() * 2,
-            "fft_mode": fft_map[fft_idx],
-            "fft_cutoff": self._fft_sl.value() / 100.0,
-            "fft_window": "hanning",
-            "fft_soft_border": self._fft_soft_cb.isChecked(),
-            "fft_soft_mode": fft_map.get(fft_idx) or "low_pass",
-            "fft_soft_cutoff": self._fft_sl.value() / 100.0,
-            "fft_soft_border_frac": 0.12,
         })
         return cfg
 
     def set_state(self, state: dict | None) -> None:
         state = state or {}
+        old_block = self._align_combo.blockSignals(True)
         self._align_combo.setCurrentIndex(
             {None: 0, "median": 1, "mean": 2}.get(state.get("align_rows"), 0))
+        self._align_combo.blockSignals(old_block)
         self._bad_lines_combo.setCurrentIndex(
             {None: 0, "step": 1, "step_segments": 1,
              "mad": 2, "mad_segments": 2}.get(state.get("remove_bad_lines"), 0))
@@ -390,12 +332,6 @@ class ProcessingControlPanel(QWidget):
         self._edge_combo.setCurrentIndex(
             {None: 0, "laplacian": 1, "log": 2, "dog": 3}.get(edge, 0))
         self._edge_sigma_sl.setValue(int(state.get("edge_sigma", 1)))
-
-        fft_mode = state.get("fft_mode")
-        self._fft_combo.setCurrentIndex(
-            {None: 0, "low_pass": 1, "high_pass": 2}.get(fft_mode, 0))
-        self._fft_sl.setValue(int(round(float(state.get("fft_cutoff", 0.10)) * 100)))
-        self._fft_soft_cb.setChecked(bool(state.get("fft_soft_border", False)))
 
     def bad_line_method(self) -> str | None:
         return self.state().get("remove_bad_lines")

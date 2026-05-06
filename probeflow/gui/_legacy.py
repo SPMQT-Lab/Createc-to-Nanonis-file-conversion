@@ -600,11 +600,13 @@ class ImageViewerDialog(QDialog):
             self._on_bad_line_preview_settings_changed)
         self._processing_panel.stm_background_requested.connect(
             self._on_open_stm_background)
+        self._processing_panel._align_combo.currentIndexChanged.connect(
+            self._on_align_rows_changed)
         right_lay.addWidget(self._processing_panel)
 
         right_lay.addWidget(_sep())
 
-        # ── Zero reference | Selection use (compact 2-column row) ─────────────
+        # ── Zero reference | ROI filter scope (compact 2-column row) ──────────
         zs_row = QHBoxLayout()
         zs_row.setSpacing(6)
         zs_row.setContentsMargins(0, 0, 0, 0)
@@ -634,7 +636,7 @@ class ImageViewerDialog(QDialog):
         sel_col = QVBoxLayout()
         sel_col.setSpacing(3)
         sel_col.setContentsMargins(0, 0, 0, 0)
-        _sel_hdr = QLabel("Selection use")
+        _sel_hdr = QLabel("ROI filters")
         _sel_hdr.setFont(QFont("Helvetica", 7, QFont.Bold))
         _sel_hdr.setAlignment(Qt.AlignCenter)
         sel_col.addWidget(_sel_hdr)
@@ -645,28 +647,6 @@ class ImageViewerDialog(QDialog):
             "ROI filters only: smooth/high-pass/edge/FFT apply inside the "
             "drawn selection; background and scan-line corrections remain whole-image.")
         sel_col.addWidget(self._scope_cb)
-        self._patch_roi_cb = QCheckBox("Patch selection")
-        self._patch_roi_cb.setFont(QFont("Helvetica", 8))
-        self._patch_roi_cb.setToolTip(
-            "Fills the selected area by patch interpolation. "
-            "Line selections cannot be patch-interpolated."
-        )
-        sel_col.addWidget(self._patch_roi_cb)
-        _pm_row = QHBoxLayout()
-        _pm_lbl = QLabel("Method:")
-        _pm_lbl.setFont(QFont("Helvetica", 8))
-        _pm_lbl.setFixedWidth(46)
-        self._patch_method_combo = QComboBox()
-        self._patch_method_combo.addItems(["Line-fit", "Laplace"])
-        self._patch_method_combo.setFont(QFont("Helvetica", 8))
-        self._patch_method_combo.setToolTip(
-            "Line-fit: extrapolates scan-line slope from rim pixels — "
-            "recommended for STM terraces.\n"
-            "Laplace: isotropic harmonic fill — smooth but does not preserve surface tilt."
-        )
-        _pm_row.addWidget(_pm_lbl)
-        _pm_row.addWidget(self._patch_method_combo, 1)
-        sel_col.addLayout(_pm_row)
         sel_col.addStretch()
 
         zs_row.addLayout(zero_col, 1)
@@ -687,6 +667,10 @@ class ImageViewerDialog(QDialog):
         proc_apply_btn.setFont(QFont("Helvetica", 8, QFont.Bold))
         proc_apply_btn.setFixedHeight(28)
         proc_apply_btn.setObjectName("accentBtn")
+        proc_apply_btn.setToolTip(
+            "Apply queued in-panel filters and bad-line correction settings. "
+            "Align rows updates immediately; STM Background has its own Apply."
+        )
         proc_apply_btn.clicked.connect(self._on_apply_processing)
         proc_reset_btn = QPushButton("Reset")
         proc_reset_btn.setFont(QFont("Helvetica", 8))
@@ -773,6 +757,36 @@ class ImageViewerDialog(QDialog):
             "and cursor readout in nm⁻¹.")
         fft_viewer_btn.clicked.connect(self._on_open_fft_viewer)
         advanced_lay.addWidget(fft_viewer_btn)
+
+        radial_fft_lbl = QLabel("Radial FFT")
+        radial_fft_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
+        radial_fft_lbl.setAlignment(Qt.AlignCenter)
+        advanced_lay.addWidget(radial_fft_lbl)
+        fft_mode_row = QHBoxLayout()
+        fft_mode_row.setContentsMargins(0, 0, 0, 0)
+        fft_mode_lbl = QLabel("Mode:")
+        fft_mode_lbl.setFont(QFont("Helvetica", 8))
+        self._advanced_fft_combo = QComboBox()
+        self._advanced_fft_combo.addItems(["None", "Low-pass", "High-pass"])
+        self._advanced_fft_combo.setFont(QFont("Helvetica", 8))
+        self._advanced_fft_combo.setToolTip(
+            "Global radial low/high-pass FFT filter. Use Apply processing to commit it."
+        )
+        fft_mode_row.addWidget(fft_mode_lbl)
+        fft_mode_row.addWidget(self._advanced_fft_combo, 1)
+        advanced_lay.addLayout(fft_mode_row)
+        self._advanced_fft_cutoff_w, self._advanced_fft_cutoff_spin = _spin_row(
+            "Cutoff:", 0.01, 0.50, 0.10, 0.01, 2)
+        self._advanced_fft_cutoff_spin.setToolTip(
+            "Fraction of the Nyquist radius used by the radial FFT filter."
+        )
+        advanced_lay.addWidget(self._advanced_fft_cutoff_w)
+        self._advanced_fft_soft_cb = QCheckBox("Soft border")
+        self._advanced_fft_soft_cb.setFont(QFont("Helvetica", 8))
+        self._advanced_fft_soft_cb.setToolTip(
+            "Cosine-taper the image edges before FFT to suppress ringing artefacts."
+        )
+        advanced_lay.addWidget(self._advanced_fft_soft_cb)
 
         undistort_lbl = QLabel("Linear undistort (drift)")
         undistort_lbl.setFont(QFont("Helvetica", 7, QFont.Bold))
@@ -928,16 +942,6 @@ class ImageViewerDialog(QDialog):
             processing_menu, "Edge filter", self._processing_panel._edge_combo,
             ["None", "Laplacian", "LoG", "DoG"],
         )
-        self._add_combo_menu(
-            processing_menu, "Radial FFT", self._processing_panel._fft_combo,
-            ["None", "Low-pass", "High-pass"],
-        )
-        fft_soft_action = QAction("FFT soft border", self)
-        fft_soft_action.setCheckable(True)
-        fft_soft_action.triggered.connect(self._processing_panel._fft_soft_cb.setChecked)
-        self._processing_panel._fft_soft_cb.toggled.connect(self._sync_viewer_menu_actions)
-        self._viewer_processing_actions["fft_soft_border"] = fft_soft_action
-        processing_menu.addAction(fft_soft_action)
         processing_menu.addSeparator()
 
         stm_background_action = QAction("STM Background...", self)
@@ -1978,7 +1982,6 @@ class ImageViewerDialog(QDialog):
                         "Smooth": self._processing_panel._smooth_combo,
                         "Hi-pass": self._processing_panel._highpass_combo,
                         "Edge filter": self._processing_panel._edge_combo,
-                        "Radial FFT": self._processing_panel._fft_combo,
                     }.get(title)
                     current = combo.currentText() if combo is not None else ""
                     for label, action in value.items():
@@ -1986,11 +1989,7 @@ class ImageViewerDialog(QDialog):
                         action.setChecked(label == current)
                         action.blockSignals(False)
                     continue
-                if key == "fft_soft_border":
-                    value.blockSignals(True)
-                    value.setChecked(self._processing_panel._fft_soft_cb.isChecked())
-                    value.blockSignals(False)
-                elif key == "zero_plane":
+                if key == "zero_plane":
                     value.blockSignals(True)
                     value.setChecked(self._set_zero_plane_btn.isChecked())
                     value.blockSignals(False)
@@ -2303,9 +2302,6 @@ class ImageViewerDialog(QDialog):
                 "processing_roi_id",
                 "roi_rect",
                 "roi_geometry",
-                "patch_interpolate_rect",
-                "patch_interpolate_geometry",
-                "patch_interpolate_iterations",
             )
         )
         self._roi_rect_px = None
@@ -2314,13 +2310,9 @@ class ImageViewerDialog(QDialog):
         self._processing.pop("processing_roi_id", None)
         self._processing.pop("roi_rect", None)
         self._processing.pop("roi_geometry", None)
-        self._processing.pop("patch_interpolate_rect", None)
-        self._processing.pop("patch_interpolate_geometry", None)
-        self._processing.pop("patch_interpolate_iterations", None)
         self._zoom_lbl.clear_roi()
         self._set_selection_tool("none")
         self._scope_cb.setCurrentIndex(0)
-        self._patch_roi_cb.setChecked(False)
         self._roi_status_lbl.setText("Selection: none")
         if had_processing_selection:
             self._refresh_processing_display()
@@ -2562,21 +2554,87 @@ class ImageViewerDialog(QDialog):
         self._ruler_container.adjustSize()
 
     # ── Controls ───────────────────────────────────────────────────────────────
+    def _on_align_rows_changed(self, _index: int) -> None:
+        """Apply row-alignment changes immediately without committing queued filters."""
+        if not hasattr(self, "_processing_panel"):
+            return
+        align_value = self._processing_panel.state().get("align_rows")
+        current_value = self._processing.get("align_rows")
+        if current_value == align_value:
+            self._sync_viewer_menu_actions()
+            return
+        if align_value is None and "align_rows" not in self._processing:
+            self._sync_viewer_menu_actions()
+            return
+        base_state = copy.deepcopy(self._processing)
+        base_state.pop("align_rows", None)
+        coalesced_align_undo = bool(
+            self._proc_undo_stack and self._proc_undo_stack[-1] == base_state
+        )
+        if coalesced_align_undo:
+            self._proc_redo_stack.clear()
+            self._update_undo_redo_buttons()
+        else:
+            self._push_proc_undo_snapshot()
+        if align_value is None:
+            self._processing.pop("align_rows", None)
+            label = "None"
+        else:
+            self._processing["align_rows"] = align_value
+            label = str(align_value).replace("_", " ").title()
+        if (
+            coalesced_align_undo
+            and self._proc_undo_stack
+            and self._processing == self._proc_undo_stack[-1]
+        ):
+            self._proc_undo_stack.pop()
+            self._update_undo_redo_buttons()
+        self._clear_bad_line_preview()
+        self._refresh_processing_display()
+        if hasattr(self, "_status_lbl"):
+            self._status_lbl.setText(f"Align rows: {label}.")
+
     def _advanced_processing_state(self) -> dict:
         if not hasattr(self, "_undistort_shear_spin"):
             return {}
         shear_x = float(self._undistort_shear_spin.value())
         scale_y = float(self._undistort_scale_spin.value())
-        return {
+        state = {
             "linear_undistort": (shear_x != 0.0 or scale_y != 1.0),
             "undistort_shear_x": shear_x,
             "undistort_scale_y": scale_y,
         }
+        if hasattr(self, "_advanced_fft_combo"):
+            fft_map = {0: None, 1: "low_pass", 2: "high_pass"}
+            fft_mode = fft_map.get(self._advanced_fft_combo.currentIndex())
+            fft_cutoff = float(self._advanced_fft_cutoff_spin.value())
+            if fft_mode is not None:
+                state.update({
+                    "fft_mode": fft_mode,
+                    "fft_cutoff": fft_cutoff,
+                    "fft_window": "hanning",
+                })
+            if self._advanced_fft_soft_cb.isChecked():
+                state.update({
+                    "fft_soft_border": True,
+                    "fft_soft_mode": fft_mode or "low_pass",
+                    "fft_soft_cutoff": fft_cutoff,
+                    "fft_soft_border_frac": 0.12,
+                })
+        return state
 
     def _set_advanced_processing_state(self, state: dict | None) -> None:
         if not hasattr(self, "_undistort_shear_spin"):
             return
         state = state or {}
+        if hasattr(self, "_advanced_fft_combo"):
+            fft_mode = state.get("fft_mode") or state.get("fft_soft_mode")
+            self._advanced_fft_combo.setCurrentIndex(
+                {None: 0, "low_pass": 1, "high_pass": 2}.get(fft_mode, 0)
+            )
+            cutoff = state.get("fft_cutoff", state.get("fft_soft_cutoff", 0.10))
+            self._advanced_fft_cutoff_spin.setValue(float(cutoff))
+            self._advanced_fft_soft_cb.setChecked(bool(state.get("fft_soft_border", False)))
         self._undistort_shear_spin.setValue(float(state.get("undistort_shear_x", 0.0)))
         self._undistort_scale_spin.setValue(float(state.get("undistort_scale_y", 1.0)))
 
@@ -2634,7 +2692,6 @@ class ImageViewerDialog(QDialog):
             self._scope_cb.currentIndex() == 1
             or (active_area_roi_id is not None and has_roi_aware_local_filter)
         )
-        wants_patch_roi = self._patch_roi_cb.isChecked()
         selection_geometry = self._area_selection_geometry_px()
         if (
             active_roi is not None
@@ -2646,7 +2703,7 @@ class ImageViewerDialog(QDialog):
                 "select an area ROI or delete/deselect it before applying local filters."
             )
             return
-        if wants_filter_roi or wants_patch_roi:
+        if wants_filter_roi:
             if (
                 active_area_roi_id is None
                 and self._selection_geometry
@@ -2695,20 +2752,6 @@ class ImageViewerDialog(QDialog):
             self._processing.pop("processing_roi_id", None)
             self._processing.pop("roi_rect", None)
             self._processing.pop("roi_geometry", None)
-        if wants_patch_roi:
-            self._processing["patch_interpolate_geometry"] = dict(selection_geometry)
-            if selection_geometry.get("kind") == "rectangle":
-                self._processing["patch_interpolate_rect"] = selection_geometry.get("rect_px")
-            else:
-                self._processing.pop("patch_interpolate_rect", None)
-            self._processing["patch_interpolate_iterations"] = 200
-            self._processing["patch_interpolate_method"] = (
-                "line_fit" if self._patch_method_combo.currentIndex() == 0 else "laplace"
-            )
-        else:
-            self._processing.pop("patch_interpolate_rect", None)
-            self._processing.pop("patch_interpolate_geometry", None)
-            self._processing.pop("patch_interpolate_iterations", None)
         self._clear_bad_line_preview()
         self._refresh_processing_display()
 
@@ -2735,7 +2778,6 @@ class ImageViewerDialog(QDialog):
         self._zoom_lbl.clear_roi()
         self._set_selection_tool("none")
         self._scope_cb.setCurrentIndex(0)
-        self._patch_roi_cb.setChecked(False)
         self._roi_status_lbl.setText("Selection: none")
         self._refresh_zero_markers()
         self._status_lbl.setText("Reset: showing original on-disk data.")
@@ -3959,26 +4001,6 @@ defects and adsorbates stand out.</p>
 with a lattice-frequency kernel.  Notch removal is the standard workflow for
 defect imaging; the ImageJ bandpass extraction is useful for lattice
 characterisation.</p>
-
-<hr/>
-
-<h2>patch_interpolate</h2>
-<p class="sub">Params: <span class="param">method</span> line_fit|laplace,
-<span class="param">rim_px</span> (default 20),
-<span class="param">iterations</span> (laplace only, default 200)</p>
-<p><b>line_fit (default):</b> For each masked row, fits a linear function to
-the non-masked pixels within <span class="param">rim_px</span> columns of the
-masked boundary (the "rim"), then extrapolates that line through the masked
-columns.  This preserves the local surface slope — physically correct for STM
-scan-line repair where nearby scan lines share the same tilt.  Based on the
-ImageJ Patch_Interpolation plugin (M.&nbsp;Schmid), mode "lines with individual
-slopes".  Rows with no rim data fall back to row-blended interpolation from
-vertical neighbours.</p>
-<p><b>laplace:</b> Iterative Jacobi relaxation of the discrete Laplace
-equation: each masked pixel converges to the average of its four neighbours.
-Isotropic and smooth, but does not preserve scan-line slope — creates
-artificial height bumps on sloped terraces.  Useful for non-directional patches
-(e.g., circular defect sites away from step edges).</p>
 
 <hr/>
 
