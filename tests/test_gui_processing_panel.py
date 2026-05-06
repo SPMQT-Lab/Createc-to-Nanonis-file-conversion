@@ -51,6 +51,11 @@ def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
     panel = ProcessingControlPanel("viewer_full")
     panel.set_state({
         "align_rows": "mean",
+        "remove_bad_lines": "step",
+        "remove_bad_lines_threshold": 7.5,
+        "remove_bad_lines_polarity": "dark",
+        "remove_bad_lines_min_segment_length_px": 8,
+        "remove_bad_lines_max_adjacent_bad_lines": 2,
         "bg_order": 4,
         "bg_step_tolerance": True,
         "stm_line_bg": "step_tolerant",
@@ -67,6 +72,11 @@ def test_viewer_full_panel_round_trips_standard_processing_state(qapp):
     state = panel.state()
 
     assert state["align_rows"] == "mean"
+    assert state["remove_bad_lines"] == "step"
+    assert state["remove_bad_lines_threshold"] == 7.5
+    assert state["remove_bad_lines_polarity"] == "dark"
+    assert state["remove_bad_lines_min_segment_length_px"] == 8
+    assert state["remove_bad_lines_max_adjacent_bad_lines"] == 2
     assert state["bg_order"] == 4
     assert state["bg_step_tolerance"] is True
     assert state["stm_line_bg"] == "step_tolerant"
@@ -166,8 +176,8 @@ def test_viewer_dialog_menus_mirror_existing_controls(qapp, monkeypatch):
     assert dlg._processing_panel._align_combo.currentText() == "Median"
     assert action("Processing", "Median").isChecked()
 
-    action("Processing", "MAD (rows)").trigger()
-    assert dlg._processing_panel._bad_lines_combo.currentText() == "MAD (rows)"
+    action("Processing", "Step segments").trigger()
+    assert dlg._processing_panel._bad_lines_combo.currentText() == "Step segments"
 
     action("Processing", "Gaussian").trigger()
     assert dlg._processing_panel._smooth_combo.currentText() == "Gaussian"
@@ -192,6 +202,107 @@ def test_viewer_dialog_menus_mirror_existing_controls(qapp, monkeypatch):
     assert action("Export", "Save PNG copy").isEnabled() is True
     assert action("Export", "Save processed image").isEnabled() is False
     assert action("Export", "Save provenance").isEnabled() is False
+
+    action("Help", "Definitions").trigger()
+    qapp.processEvents()
+    assert dlg._definitions_dialog.isVisible()
+    definitions_dialog = dlg._definitions_dialog
+    action("Help", "Definitions").trigger()
+    qapp.processEvents()
+    assert dlg._definitions_dialog is definitions_dialog
+    definitions_dialog.close()
+    qapp.processEvents()
+    assert dlg.isVisible()
+
+    dlg.close()
+    dlg.deleteLater()
+
+
+def test_bad_segment_overlay_rectangles_match_detector_output(qapp):
+    from PySide6.QtGui import QPixmap
+    from probeflow.gui.image_canvas import ImageCanvas
+    from probeflow.processing import BadSegment
+
+    canvas = ImageCanvas()
+    canvas.set_source(QPixmap(20, 10), reset_zoom=False)
+    segments = [BadSegment(4, 3, 9, 12.0, "step")]
+
+    canvas.set_bad_segment_overlay(segments)
+
+    assert len(canvas._bad_segment_items) == 1
+    rect = canvas._bad_segment_items[0].rect()
+    assert rect.x() == 3
+    assert rect.y() == 4
+    assert rect.width() == 6
+    assert rect.height() == 1
+
+    canvas.clear_bad_segment_overlay()
+    assert canvas._bad_segment_items == []
+    canvas.deleteLater()
+
+
+def test_bad_line_preview_uses_panel_detection_parameters(qapp, monkeypatch):
+    from probeflow.gui import ImageViewerDialog, SxmFile, THEMES
+    from probeflow.processing import BadLineCorrectionInfo, BadSegment
+
+    monkeypatch.setattr(ImageViewerDialog, "_load_current", lambda self: None)
+
+    entry = SxmFile(path=Path("/tmp/example.sxm"), stem="example", Nx=8, Ny=8)
+    dlg = ImageViewerDialog(entry, [entry], "gray", THEMES["dark"])
+    dlg._display_arr = np.ones((8, 8), dtype=float)
+    dlg._processing_panel.set_state({
+        "remove_bad_lines": "step",
+        "remove_bad_lines_threshold": 4.5,
+        "remove_bad_lines_polarity": "dark",
+        "remove_bad_lines_min_segment_length_px": 6,
+        "remove_bad_lines_max_adjacent_bad_lines": 2,
+    })
+    segment = BadSegment(3, 2, 6, 9.0, "step")
+    captured = {}
+
+    def fake_detect(image, **kwargs):
+        captured["detect_image"] = image.copy()
+        captured["detect_kwargs"] = kwargs
+        return [segment]
+
+    def fake_repair(image, segments, **kwargs):
+        captured["repair_image"] = image.copy()
+        captured["repair_segments"] = tuple(segments)
+        captured["repair_kwargs"] = kwargs
+        return image.copy(), BadLineCorrectionInfo(
+            segments=tuple(segments),
+            skipped_segments=(),
+            method="step",
+            threshold=float(kwargs["threshold"]),
+            corrected_segments=tuple(segments),
+            polarity=str(kwargs["polarity"]),
+            min_segment_length_px=int(kwargs["min_segment_length_px"]),
+            max_adjacent_bad_lines=int(kwargs["max_adjacent_bad_lines"]),
+        )
+
+    monkeypatch.setattr("probeflow.processing.detect_bad_scanline_segments", fake_detect)
+    monkeypatch.setattr("probeflow.processing.repair_bad_scanline_segments", fake_repair)
+
+    dlg._on_preview_bad_lines()
+
+    np.testing.assert_array_equal(captured["detect_image"], dlg._display_arr)
+    assert captured["detect_kwargs"] == {
+        "threshold": 4.5,
+        "method": "step",
+        "polarity": "dark",
+        "min_segment_length_px": 6,
+        "max_adjacent_bad_lines": 2,
+    }
+    assert captured["repair_segments"] == (segment,)
+    assert captured["repair_kwargs"] == {
+        "max_adjacent_bad_lines": 2,
+        "threshold": 4.5,
+        "polarity": "dark",
+        "min_segment_length_px": 6,
+    }
+    assert dlg._processing_panel._bad_line_preview_lbl.text() == (
+        "Detected 1 segment on 1 scan line"
+    )
 
     dlg.close()
     dlg.deleteLater()

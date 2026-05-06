@@ -246,6 +246,25 @@ class TestGuiConversion:
         assert "align_rows" in op_names
         assert "plane_bg" in op_names
 
+    def test_bad_scanline_threshold_and_method_captured(self):
+        state = processing_state_from_gui({
+            "remove_bad_lines": "step",
+            "remove_bad_lines_threshold": 7.5,
+            "remove_bad_lines_polarity": "dark",
+            "remove_bad_lines_min_segment_length_px": 8,
+            "remove_bad_lines_max_adjacent_bad_lines": 2,
+        })
+
+        assert len(state.steps) == 1
+        assert state.steps[0].op == "remove_bad_lines"
+        assert state.steps[0].params == {
+            "threshold_mad": 7.5,
+            "method": "step",
+            "polarity": "dark",
+            "min_segment_length_px": 8,
+            "max_adjacent_bad_lines": 2,
+        }
+
     def test_false_bool_ops_excluded(self):
         gui = {"remove_bad_lines": False, "facet_level": False}
         state = processing_state_from_gui(gui)
@@ -673,8 +692,20 @@ class TestApplyKnownSteps:
     def test_remove_bad_lines_threshold_is_forwarded(self, monkeypatch):
         captured = {}
 
-        def fake_remove_bad_lines(arr, threshold_mad=5.0, *, method="mad"):
+        def fake_remove_bad_lines(
+            arr,
+            threshold_mad=5.0,
+            *,
+            method="mad",
+            polarity="bright",
+            min_segment_length_px=2,
+            max_adjacent_bad_lines=1,
+        ):
             captured["threshold_mad"] = threshold_mad
+            captured["method"] = method
+            captured["polarity"] = polarity
+            captured["min_segment_length_px"] = min_segment_length_px
+            captured["max_adjacent_bad_lines"] = max_adjacent_bad_lines
             return arr
 
         monkeypatch.setattr(
@@ -682,10 +713,19 @@ class TestApplyKnownSteps:
             fake_remove_bad_lines,
         )
         state = ProcessingState(steps=[
-            ProcessingStep("remove_bad_lines", {"threshold_mad": 3.25}),
+            ProcessingStep("remove_bad_lines", {
+                "threshold_mad": 3.25,
+                "polarity": "dark",
+                "min_segment_length_px": 8,
+                "max_adjacent_bad_lines": 2,
+            }),
         ])
         apply_processing_state(np.ones((8, 8)), state)
         assert captured["threshold_mad"] == 3.25
+        assert captured["method"] == "mad"
+        assert captured["polarity"] == "dark"
+        assert captured["min_segment_length_px"] == 8
+        assert captured["max_adjacent_bad_lines"] == 2
 
     def test_facet_level_threshold_is_forwarded(self, monkeypatch):
         captured = {}

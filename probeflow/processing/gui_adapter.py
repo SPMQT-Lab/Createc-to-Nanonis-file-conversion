@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 # colourmap, or clip percentiles).
 NUMERIC_PROC_KEYS: tuple[str, ...] = (
     "remove_bad_lines",
+    "remove_bad_lines_threshold",
+    "remove_bad_lines_polarity",
+    "remove_bad_lines_min_segment_length_px",
+    "remove_bad_lines_max_adjacent_bad_lines",
     "align_rows",
     "bg_order",
     "bg_step_tolerance",
@@ -119,9 +123,20 @@ def processing_state_from_gui(gui_state: dict) -> "ProcessingState":
         # Legacy boolean True maps to the original MAD method.
         if bad_lines_method is True or bad_lines_method == "True":
             bad_lines_method = "mad"
+        threshold = gui_state.get(
+            "remove_bad_lines_threshold",
+            gui_state.get("threshold_mad", 5.0),
+        )
         _append_step(ProcessingStep("remove_bad_lines", {
-            "threshold_mad": 5.0,
+            "threshold_mad": float(threshold),
             "method": str(bad_lines_method),
+            "polarity": str(gui_state.get("remove_bad_lines_polarity", "bright")),
+            "min_segment_length_px": int(
+                gui_state.get("remove_bad_lines_min_segment_length_px", 2)
+            ),
+            "max_adjacent_bad_lines": int(
+                gui_state.get("remove_bad_lines_max_adjacent_bad_lines", 1)
+            ),
         }))
 
     align = gui_state.get("align_rows")

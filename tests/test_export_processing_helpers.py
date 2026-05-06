@@ -223,11 +223,23 @@ class TestApplyProcessingStateSingleOp:
 
     def test_remove_bad_lines_appends_entry(self):
         scan = _make_scan(np.ones((16, 16)))
-        apply_processing_state_to_scan(scan, {"remove_bad_lines": True})
+        apply_processing_state_to_scan(scan, {
+            "remove_bad_lines": "mad",
+            "remove_bad_lines_threshold": 4.5,
+            "remove_bad_lines_polarity": "dark",
+            "remove_bad_lines_min_segment_length_px": 8,
+            "remove_bad_lines_max_adjacent_bad_lines": 2,
+        })
         assert len(scan.processing_history) == 1
         h = scan.processing_history[0]
         assert h["op"] == "remove_bad_lines"
-        assert h["params"]["threshold_mad"] == 5.0
+        assert h["params"] == {
+            "threshold_mad": 4.5,
+            "method": "mad",
+            "polarity": "dark",
+            "min_segment_length_px": 8,
+            "max_adjacent_bad_lines": 2,
+        }
 
 
 # ─── Task 4: GUI processing helper — multiple operations ─────────────────────

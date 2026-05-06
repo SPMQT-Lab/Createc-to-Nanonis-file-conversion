@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QResizeEvent
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSizePolicy, QSlider,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton,
+    QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from probeflow.processing.gui_adapter import *
@@ -14,6 +14,9 @@ from probeflow.processing.gui_adapter import *
 
 class ProcessingControlPanel(QWidget):
     """Internal processing controls shared by Browse and Viewer."""
+
+    bad_line_preview_requested = Signal()
+    bad_line_preview_settings_changed = Signal()
 
     QUICK_KEYS = ("align_rows", "remove_bad_lines")
 
@@ -109,16 +112,114 @@ class ProcessingControlPanel(QWidget):
         self._align_combo = _combo_row("Align rows:", ["None", "Median", "Mean"])
 
         self._bad_lines_combo = _combo_row(
-            "Bad lines:", ["None", "MAD (rows)", "Step (cols)"]
+            "Bad lines:", ["None", "Step segments", "MAD/outlier segments"]
         )
         self._bad_lines_combo.setToolTip(
-            "MAD: flags rows whose median deviates by >5× MAD from the image median.\n"
-            "Step: per-column scan for large vertical jumps; detects partial bad lines."
+            "Detects bad fast-scan line segments and repairs only those segments "
+            "from neighbouring scan lines."
         )
 
         if self._mode == "browse_quick":
             lay.addStretch()
             return
+
+        self._bad_line_options = QWidget()
+        blo = QVBoxLayout(self._bad_line_options)
+        blo.setContentsMargins(0, 0, 0, 0)
+        blo.setSpacing(3)
+        polarity_row = QHBoxLayout()
+        polarity_row.setContentsMargins(0, 0, 0, 0)
+        polarity_label = QLabel("Polarity:")
+        polarity_label.setFont(QFont("Helvetica", 8))
+        self._bad_line_polarity_combo = QComboBox()
+        self._bad_line_polarity_combo.addItems(["Bright", "Dark"])
+        self._bad_line_polarity_combo.setFont(QFont("Helvetica", 8))
+        self._bad_line_polarity_combo.setToolTip(
+            "Bright detects segments higher than nearby scan lines. "
+            "Dark detects segments lower than nearby scan lines."
+        )
+        polarity_row.addWidget(polarity_label)
+        polarity_row.addWidget(self._bad_line_polarity_combo, 1)
+        blo.addLayout(polarity_row)
+        threshold_row = QHBoxLayout()
+        threshold_row.setContentsMargins(0, 0, 0, 0)
+        threshold_label = QLabel("Threshold:")
+        threshold_label.setFont(QFont("Helvetica", 8))
+        self._bad_line_threshold_spin = QDoubleSpinBox()
+        self._bad_line_threshold_spin.setRange(0.5, 50.0)
+        self._bad_line_threshold_spin.setSingleStep(0.5)
+        self._bad_line_threshold_spin.setDecimals(1)
+        self._bad_line_threshold_spin.setValue(5.0)
+        self._bad_line_threshold_spin.setToolTip(
+            "Robust z-like multiplier. Higher values detect fewer segments; "
+            "lower values are more aggressive."
+        )
+        threshold_row.addWidget(threshold_label)
+        threshold_row.addWidget(self._bad_line_threshold_spin, 1)
+        blo.addLayout(threshold_row)
+        min_len_row = QHBoxLayout()
+        min_len_row.setContentsMargins(0, 0, 0, 0)
+        min_len_label = QLabel("Min length:")
+        min_len_label.setFont(QFont("Helvetica", 8))
+        self._bad_line_min_len_spin = QDoubleSpinBox()
+        self._bad_line_min_len_spin.setRange(1, 512)
+        self._bad_line_min_len_spin.setSingleStep(1)
+        self._bad_line_min_len_spin.setDecimals(0)
+        self._bad_line_min_len_spin.setValue(2)
+        self._bad_line_min_len_spin.setSuffix(" px")
+        self._bad_line_min_len_spin.setToolTip(
+            "Shortest run of neighbouring pixels along the fast-scan direction "
+            "that can be treated as a bad segment."
+        )
+        min_len_row.addWidget(min_len_label)
+        min_len_row.addWidget(self._bad_line_min_len_spin, 1)
+        blo.addLayout(min_len_row)
+        adj_row = QHBoxLayout()
+        adj_row.setContentsMargins(0, 0, 0, 0)
+        adj_label = QLabel("Max adjacent:")
+        adj_label.setFont(QFont("Helvetica", 8))
+        self._bad_line_adjacent_spin = QDoubleSpinBox()
+        self._bad_line_adjacent_spin.setRange(1, 32)
+        self._bad_line_adjacent_spin.setSingleStep(1)
+        self._bad_line_adjacent_spin.setDecimals(0)
+        self._bad_line_adjacent_spin.setValue(1)
+        self._bad_line_adjacent_spin.setSuffix(" lines")
+        self._bad_line_adjacent_spin.setToolTip(
+            "Maximum neighbouring scan lines to repair as a local artifact. "
+            "Broader adjacent groups are previewed but skipped."
+        )
+        adj_row.addWidget(adj_label)
+        adj_row.addWidget(self._bad_line_adjacent_spin, 1)
+        blo.addLayout(adj_row)
+        preview_row = QHBoxLayout()
+        preview_row.setContentsMargins(0, 0, 0, 0)
+        self._bad_line_preview_btn = QPushButton("Preview detection")
+        self._bad_line_preview_btn.setFont(QFont("Helvetica", 8))
+        self._bad_line_preview_btn.setToolTip(
+            "Highlight candidate bad scan-line segments without modifying data."
+        )
+        preview_row.addWidget(self._bad_line_preview_btn)
+        blo.addLayout(preview_row)
+        self._bad_line_preview_lbl = QLabel("Preview: not run")
+        self._bad_line_preview_lbl.setFont(QFont("Helvetica", 8))
+        self._bad_line_preview_lbl.setWordWrap(True)
+        blo.addWidget(self._bad_line_preview_lbl)
+        lay.addWidget(self._bad_line_options)
+        self._bad_lines_combo.currentIndexChanged.connect(
+            self._sync_bad_line_controls)
+        self._bad_line_threshold_spin.valueChanged.connect(
+            lambda _value: self.bad_line_preview_settings_changed.emit())
+        self._bad_line_polarity_combo.currentIndexChanged.connect(
+            lambda _index: self.bad_line_preview_settings_changed.emit())
+        self._bad_line_min_len_spin.valueChanged.connect(
+            lambda _value: self.bad_line_preview_settings_changed.emit())
+        self._bad_line_adjacent_spin.valueChanged.connect(
+            lambda _value: self.bad_line_preview_settings_changed.emit())
+        self._bad_lines_combo.currentIndexChanged.connect(
+            lambda _index: self.bad_line_preview_settings_changed.emit())
+        self._bad_line_preview_btn.clicked.connect(
+            self.bad_line_preview_requested.emit)
+        self._sync_bad_line_controls()
 
         # ── Filter section (left column / full-width in 1-col) ────────────────
         self._filter_section = QWidget()
@@ -225,7 +326,7 @@ class ProcessingControlPanel(QWidget):
 
     def state(self) -> dict:
         align_map = {0: None, 1: "median", 2: "mean"}
-        bad_map = {0: None, 1: "mad", 2: "step"}
+        bad_map = {0: None, 1: "step", 2: "mad"}
         cfg = {
             "align_rows": align_map[self._align_combo.currentIndex()],
             "remove_bad_lines": bad_map[self._bad_lines_combo.currentIndex()],
@@ -241,6 +342,19 @@ class ProcessingControlPanel(QWidget):
         edge_i = self._edge_combo.currentIndex()
         fft_idx = self._fft_combo.currentIndex()
         cfg.update({
+            "remove_bad_lines_threshold": (
+                self._bad_line_threshold_spin.value()
+                if cfg["remove_bad_lines"] is not None else None
+            ),
+            "remove_bad_lines_polarity": (
+                "bright" if self._bad_line_polarity_combo.currentIndex() == 0 else "dark"
+            ),
+            "remove_bad_lines_min_segment_length_px": int(
+                self._bad_line_min_len_spin.value()
+            ),
+            "remove_bad_lines_max_adjacent_bad_lines": int(
+                self._bad_line_adjacent_spin.value()
+            ),
             "bg_order": bg_map[self._bg_combo.currentIndex()],
             "bg_step_tolerance": self._bg_step_cb.isChecked(),
             "stm_line_bg": (
@@ -269,9 +383,21 @@ class ProcessingControlPanel(QWidget):
         self._align_combo.setCurrentIndex(
             {None: 0, "median": 1, "mean": 2}.get(state.get("align_rows"), 0))
         self._bad_lines_combo.setCurrentIndex(
-            {None: 0, "mad": 1, "step": 2}.get(state.get("remove_bad_lines"), 0))
+            {None: 0, "step": 1, "step_segments": 1,
+             "mad": 2, "mad_segments": 2}.get(state.get("remove_bad_lines"), 0))
         if self._mode == "browse_quick":
             return
+        threshold = state.get("remove_bad_lines_threshold")
+        if threshold is None:
+            threshold = state.get("threshold_mad", 5.0)
+        self._bad_line_threshold_spin.setValue(float(threshold))
+        self._bad_line_polarity_combo.setCurrentIndex(
+            {"bright": 0, "dark": 1}.get(
+                state.get("remove_bad_lines_polarity", "bright"), 0))
+        self._bad_line_min_len_spin.setValue(float(
+            state.get("remove_bad_lines_min_segment_length_px", 2)))
+        self._bad_line_adjacent_spin.setValue(float(
+            state.get("remove_bad_lines_max_adjacent_bad_lines", 1)))
 
         self._bg_combo.setCurrentIndex(
             {None: 0, 1: 1, 2: 2, 3: 3, 4: 4}.get(state.get("bg_order"), 0))
@@ -304,3 +430,43 @@ class ProcessingControlPanel(QWidget):
             {None: 0, "low_pass": 1, "high_pass": 2}.get(fft_mode, 0))
         self._fft_sl.setValue(int(round(float(state.get("fft_cutoff", 0.10)) * 100)))
         self._fft_soft_cb.setChecked(bool(state.get("fft_soft_border", False)))
+
+    def bad_line_method(self) -> str | None:
+        return self.state().get("remove_bad_lines")
+
+    def bad_line_threshold(self) -> float:
+        if not hasattr(self, "_bad_line_threshold_spin"):
+            return 5.0
+        return float(self._bad_line_threshold_spin.value())
+
+    def bad_line_polarity(self) -> str:
+        if not hasattr(self, "_bad_line_polarity_combo"):
+            return "bright"
+        return "bright" if self._bad_line_polarity_combo.currentIndex() == 0 else "dark"
+
+    def bad_line_min_segment_length_px(self) -> int:
+        if not hasattr(self, "_bad_line_min_len_spin"):
+            return 2
+        return int(self._bad_line_min_len_spin.value())
+
+    def bad_line_max_adjacent_bad_lines(self) -> int:
+        if not hasattr(self, "_bad_line_adjacent_spin"):
+            return 1
+        return int(self._bad_line_adjacent_spin.value())
+
+    def set_bad_line_preview_summary(self, text: str) -> None:
+        if hasattr(self, "_bad_line_preview_lbl"):
+            self._bad_line_preview_lbl.setText(str(text))
+
+    def _sync_bad_line_controls(self) -> None:
+        if not hasattr(self, "_bad_line_options"):
+            return
+        enabled = self._bad_lines_combo.currentIndex() != 0
+        self._bad_line_options.setVisible(enabled)
+        self._bad_line_threshold_spin.setEnabled(enabled)
+        self._bad_line_polarity_combo.setEnabled(enabled)
+        self._bad_line_min_len_spin.setEnabled(enabled)
+        self._bad_line_adjacent_spin.setEnabled(enabled)
+        self._bad_line_preview_btn.setEnabled(enabled)
+        if not enabled:
+            self.set_bad_line_preview_summary("Preview: select a method")

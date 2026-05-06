@@ -593,6 +593,10 @@ class ImageViewerDialog(QDialog):
         right_lay.addWidget(_sep())
 
         self._processing_panel = ProcessingControlPanel("viewer_full")
+        self._processing_panel.bad_line_preview_requested.connect(
+            self._on_preview_bad_lines)
+        self._processing_panel.bad_line_preview_settings_changed.connect(
+            self._on_bad_line_preview_settings_changed)
         right_lay.addWidget(self._processing_panel)
 
         right_lay.addWidget(_sep())
@@ -915,7 +919,7 @@ class ImageViewerDialog(QDialog):
         )
         self._add_combo_menu(
             processing_menu, "Bad line correction", self._processing_panel._bad_lines_combo,
-            ["None", "MAD (rows)", "Step (cols)"],
+            ["None", "Step segments", "MAD/outlier segments"],
         )
         self._add_combo_menu(
             processing_menu, "Smooth", self._processing_panel._smooth_combo,
@@ -1030,6 +1034,10 @@ class ImageViewerDialog(QDialog):
         about_action = QAction("About ProbeFlow", self)
         about_action.triggered.connect(self._show_viewer_about)
         help_menu.addAction(about_action)
+        definitions_action = QAction("Definitions", self)
+        definitions_action.triggered.connect(self._show_viewer_definitions)
+        help_menu.insertAction(github_action, definitions_action)
+        help_menu.insertSeparator(github_action)
 
         self._sync_viewer_menu_actions()
 
@@ -1140,6 +1148,8 @@ class ImageViewerDialog(QDialog):
     # ── Load / render ──────────────────────────────────────────────────────────
     def _load_current(self, reset_zoom: bool = True):
         entry = self._entries[self._idx]
+        if hasattr(self, "_processing_panel"):
+            self._clear_bad_line_preview()
         self._load_current_source(entry, reset_zoom=reset_zoom)
         self._refresh_display_array(reset_zoom_if_shape_changed=not reset_zoom)
         self._refresh_histogram_and_markers(entry)
@@ -1237,6 +1247,94 @@ class ImageViewerDialog(QDialog):
         self._refresh_histogram_and_markers(entry)
         self._refresh_viewer_pixmap(reset_zoom=False)
         self._refresh_line_profile_from_selection()
+
+    def _on_bad_line_preview_settings_changed(self) -> None:
+        if getattr(self, "_bad_line_preview_active", False):
+            self._on_preview_bad_lines()
+            return
+        if hasattr(self, "_processing_panel"):
+            method = self._processing_panel.bad_line_method()
+            if method is None:
+                self._processing_panel.set_bad_line_preview_summary(
+                    "Preview: select a method")
+            else:
+                self._processing_panel.set_bad_line_preview_summary(
+                    "Preview: run detection")
+        if hasattr(self._zoom_lbl, "clear_bad_segment_overlay"):
+            self._zoom_lbl.clear_bad_segment_overlay()
+
+    def _on_preview_bad_lines(self) -> None:
+        if self._display_arr is None and self._raw_arr is None:
+            self._processing_panel.set_bad_line_preview_summary("Preview: no image")
+            return
+        method = self._processing_panel.bad_line_method()
+        if method is None:
+            self._clear_bad_line_preview("Preview: select a method")
+            return
+        arr = self._display_arr if self._display_arr is not None else self._raw_arr
+        try:
+            from probeflow.processing import (
+                detect_bad_scanline_segments,
+                repair_bad_scanline_segments,
+            )
+            segments = detect_bad_scanline_segments(
+                arr,
+                threshold=self._processing_panel.bad_line_threshold(),
+                method=method,
+                polarity=self._processing_panel.bad_line_polarity(),
+                min_segment_length_px=(
+                    self._processing_panel.bad_line_min_segment_length_px()
+                ),
+                max_adjacent_bad_lines=(
+                    self._processing_panel.bad_line_max_adjacent_bad_lines()
+                ),
+            )
+            _preview_arr, preview_info = repair_bad_scanline_segments(
+                arr,
+                segments,
+                max_adjacent_bad_lines=(
+                    self._processing_panel.bad_line_max_adjacent_bad_lines()
+                ),
+                threshold=self._processing_panel.bad_line_threshold(),
+                polarity=self._processing_panel.bad_line_polarity(),
+                min_segment_length_px=(
+                    self._processing_panel.bad_line_min_segment_length_px()
+                ),
+            )
+        except Exception as exc:
+            self._clear_bad_line_preview(f"Preview error: {exc}")
+            return
+        self._bad_line_preview_segments = list(segments)
+        self._bad_line_preview_active = True
+        if hasattr(self._zoom_lbl, "set_bad_segment_overlay"):
+            self._zoom_lbl.set_bad_segment_overlay(segments)
+        n = len(segments)
+        n_lines = len({seg.line_index for seg in segments})
+        skipped = len(preview_info.skipped_segments)
+        skipped_lines = len({seg.line_index for seg in preview_info.skipped_segments})
+        if n == 0:
+            summary = "Detected 0 segments"
+        elif n == 1:
+            summary = f"Detected 1 segment on 1 scan line"
+        else:
+            summary = f"Detected {n} segments across {n_lines} scan lines"
+        if skipped:
+            summary += (
+                f"; skipped {skipped} segment{'s' if skipped != 1 else ''} "
+                f"across {skipped_lines} line{'s' if skipped_lines != 1 else ''} "
+                "because the adjacent-line limit was exceeded"
+            )
+        self._processing_panel.set_bad_line_preview_summary(summary)
+        if hasattr(self, "_status_lbl"):
+            self._status_lbl.setText(summary)
+
+    def _clear_bad_line_preview(self, summary: str = "Preview: not run") -> None:
+        self._bad_line_preview_segments = []
+        self._bad_line_preview_active = False
+        if hasattr(self, "_processing_panel"):
+            self._processing_panel.set_bad_line_preview_summary(summary)
+        if hasattr(self._zoom_lbl, "clear_bad_segment_overlay"):
+            self._zoom_lbl.clear_bad_segment_overlay()
 
     def _refresh_viewer_pixmap(self, reset_zoom: bool = False):
         if self._display_arr is None:
@@ -1822,6 +1920,15 @@ class ImageViewerDialog(QDialog):
     def _show_viewer_about(self) -> None:
         dlg = AboutDialog(self._t, self)
         dlg.exec()
+
+    def _show_viewer_definitions(self) -> None:
+        dlg = getattr(self, "_definitions_dialog", None)
+        if dlg is None:
+            dlg = _DefinitionsDialog(self._t, self)
+            self._definitions_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _sync_viewer_menu_actions(self) -> None:
         if hasattr(self, "_viewer_processing_actions"):
@@ -2581,6 +2688,7 @@ class ImageViewerDialog(QDialog):
             self._processing.pop("patch_interpolate_rect", None)
             self._processing.pop("patch_interpolate_geometry", None)
             self._processing.pop("patch_interpolate_iterations", None)
+        self._clear_bad_line_preview()
         self._refresh_processing_display()
 
     def _on_reset_processing(self):
@@ -2595,6 +2703,7 @@ class ImageViewerDialog(QDialog):
         self._processing = {}
         self._processing_panel.set_state({})
         self._set_advanced_processing_state({})
+        self._clear_bad_line_preview()
         # Untoggle any active set-zero pick modes so we don't re-pick on reload.
         if self._set_zero_plane_btn.isChecked():
             self._set_zero_plane_btn.setChecked(False)
@@ -3677,21 +3786,43 @@ float64 arrays in physical metres — no display-unit clipping involved.</p>
 <hr/>
 
 <h2>remove_bad_lines</h2>
-<p class="sub">Params: <span class="param">threshold_mad</span> (default 5.0),
-<span class="param">method</span> = mad | step</p>
-<p><b>mad (default):</b> Computes the median of each row and flags rows whose
-median deviates from the image-wide median by more than
-<span class="param">threshold_mad</span> &times; MAD (median absolute deviation of row
-medians).  Flagged rows are replaced by a distance-weighted column-wise blend
-of the nearest good rows above and below.  Self-calibrating — works without
-knowing physical step heights.  Best for tip crashes and vibration bursts that
-shift an entire row.</p>
-<p><b>step:</b> Scans each column top-to-bottom and detects transitions where
-the pixel-to-pixel step exceeds an auto-computed threshold.  The elevated
-region between a positive and subsequent negative crossing is flagged and
-interpolated per-column.  Handles <em>partial</em> bad lines (only some
-columns affected) and isolated pixel spikes that the row-median detector
-misses.  Based on the ImageJ Remove_Bad_Lines plugin by M.&nbsp;Schmid.</p>
+<p class="sub">Params: <span class="param">method</span> = step | mad,
+<span class="param">polarity</span> = bright | dark,
+<span class="param">threshold_mad</span>,
+<span class="param">min_segment_length_px</span>,
+<span class="param">max_adjacent_bad_lines</span></p>
+<p><b>step:</b> Compares each fast-scan row with neighbouring rows, then finds
+paired positive/negative jumps along the row.  Only the segment between the
+jumps is corrected.</p>
+<p><b>mad:</b> Compares each fast-scan row with neighbouring rows and flags
+contiguous outlier segments in the row residual.  This is more direct for
+plateau-like partial defects.</p>
+<p>Both methods repair a detected segment from local neighbouring scan lines;
+pixels outside detected segments remain unchanged.  Preview detection in the
+viewer is non-destructive.</p>
+
+<h2>Bad scan-line segment</h2>
+<p>A short damaged part of a fast-scan line. ProbeFlow corrects the segment
+only, not the whole row or column.</p>
+<h2>Threshold</h2>
+<p>Detection sensitivity. A higher value detects fewer, more obvious artifacts.
+A lower value detects more candidate artifacts. It is not a pixel length.</p>
+<h2>Minimum segment length (px)</h2>
+<p>The shortest run of neighbouring pixels along the fast-scan direction that
+can be treated as a bad segment.</p>
+<h2>Maximum adjacent bad lines</h2>
+<p>The largest number of neighbouring scan lines that ProbeFlow will attempt to
+repair as a local bad-line artifact. Broader damaged regions are skipped
+because local interpolation becomes unreliable.</p>
+<h2>Bright bad segment</h2>
+<p>A segment that is higher or brighter than nearby scan lines.</p>
+<h2>Dark bad segment</h2>
+<p>A segment that is lower or darker than nearby scan lines.</p>
+<h2>Preview detection</h2>
+<p>Shows candidate bad segments without modifying the image.</p>
+<h2>Apply correction</h2>
+<p>Repairs the currently detected and accepted bad segments; skipped unsafe
+groups remain unchanged.</p>
 
 <hr/>
 
@@ -3901,6 +4032,20 @@ class _DefinitionsPanel(QWidget):
         lay.addWidget(scroll)
 
 
+class _DefinitionsDialog(QDialog):
+    """Closeable utility window for processing definitions/help."""
+
+    def __init__(self, t: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("ProbeFlow Definitions")
+        self.resize(760, 640)
+        self.setModal(False)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._panel = _DefinitionsPanel(t, self)
+        lay.addWidget(self._panel)
+
+
 # ── Developer terminal sidebar ────────────────────────────────────────────────
 class _DevSidebar(QWidget):
     """Sidebar for the Dev tab: shows cwd, quick links, and info."""
@@ -4025,8 +4170,6 @@ class ProbeFlowWindow(QMainWindow):
         self._content_stack.addWidget(self._features_panel)
         self._content_stack.addWidget(self._tv_panel)
         self._content_stack.addWidget(self._dev_terminal)
-        self._defs_panel     = _DefinitionsPanel(t)
-        self._content_stack.addWidget(self._defs_panel)
         self._splitter.addWidget(self._content_stack)
 
         # ── Right: sidebar stack ───────────────────────────────────────────────
@@ -4043,8 +4186,6 @@ class ProbeFlowWindow(QMainWindow):
         self._sidebar_stack.addWidget(self._features_sidebar)
         self._sidebar_stack.addWidget(self._tv_sidebar)
         self._sidebar_stack.addWidget(self._dev_sidebar)
-        self._defs_sidebar   = QWidget()
-        self._sidebar_stack.addWidget(self._defs_sidebar)
         self._splitter.addWidget(self._sidebar_stack)
         self._splitter.setChildrenCollapsible(False)
         self._splitter.setStretchFactor(0, 1)
@@ -4227,12 +4368,16 @@ class ProbeFlowWindow(QMainWindow):
         _mode_action(tools_menu, "TV denoise", "tv", "Ctrl+4")
         tools_menu.addSeparator()
         _mode_action(tools_menu, "Developer tools", "dev", "Ctrl+5")
-        _mode_action(tools_menu, "Definitions / Debug info", "defs", "Ctrl+6")
         prefs_action = QAction("Preferences...", self)
         prefs_action.setEnabled(False)
         tools_menu.addAction(prefs_action)
 
         help_menu = menu_bar.addMenu("Help")
+        definitions_action = QAction("Definitions", self)
+        definitions_action.setShortcut(QKeySequence("Ctrl+6"))
+        definitions_action.triggered.connect(self._show_definitions)
+        help_menu.addAction(definitions_action)
+        help_menu.addSeparator()
         github_action = QAction("GitHub", self)
         github_action.triggered.connect(lambda: _open_url(GITHUB_URL))
         help_menu.addAction(github_action)
@@ -4296,8 +4441,24 @@ class ProbeFlowWindow(QMainWindow):
             self._on_thumbnail_align_changed(mode)
         self._sync_menu_actions()
 
+    def _show_definitions(self) -> None:
+        theme = THEMES["dark" if self._dark else "light"]
+        dlg = getattr(self, "_definitions_dialog", None)
+        if dlg is None:
+            dlg = _DefinitionsDialog(theme, self)
+            self._definitions_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     # ── Mode switching ─────────────────────────────────────────────────────────
     def _switch_mode(self, mode: str):
+        if mode == "defs":
+            self._show_definitions()
+            self._status_bar.showMessage(
+                "Processing algorithm reference opened in a separate window")
+            self._sync_menu_actions()
+            return
         self._mode = mode
         if mode == "browse":
             self._content_stack.setCurrentIndex(0)
@@ -4326,11 +4487,6 @@ class ProbeFlowWindow(QMainWindow):
             self._sidebar_stack.setCurrentIndex(4)
             self._status_bar.showMessage(
                 "Developer terminal — run shell commands and Python scripts")
-        elif mode == "defs":
-            self._content_stack.setCurrentIndex(5)
-            self._sidebar_stack.setCurrentIndex(5)
-            self._status_bar.showMessage(
-                "Processing algorithm reference — definitions and scientific details")
         else:
             self._content_stack.setCurrentIndex(1)
             self._sidebar_stack.setCurrentIndex(1)

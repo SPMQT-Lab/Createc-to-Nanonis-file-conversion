@@ -482,6 +482,9 @@ def apply_processing_state(
                 a,
                 threshold_mad=float(p.get("threshold_mad", 5.0)),
                 method=str(p.get("method", "mad")),
+                polarity=str(p.get("polarity", "bright")),
+                min_segment_length_px=int(p.get("min_segment_length_px", 2)),
+                max_adjacent_bad_lines=int(p.get("max_adjacent_bad_lines", 1)),
             )
         elif step.op == "align_rows":
             a = _proc.align_rows(a, method=p.get("method", "median"))

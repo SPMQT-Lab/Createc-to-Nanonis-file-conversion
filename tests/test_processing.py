@@ -7,6 +7,9 @@ import pytest
 
 from probeflow.processing import (
     align_rows,
+    BadSegment,
+    correct_bad_scanline_segments,
+    detect_bad_scanline_segments,
     detect_grains,
     edge_detect,
     export_png,
@@ -19,6 +22,7 @@ from probeflow.processing import (
     measure_periodicity,
     periodic_notch_filter,
     remove_bad_lines,
+    repair_bad_scanline_segments,
     set_zero_plane,
     stm_line_background,
     subtract_background,
@@ -65,26 +69,145 @@ class TestRemoveBadLines:
         out = remove_bad_lines(flat_image)
         assert np.allclose(out, flat_image)
 
-    def test_single_spike_row_fixed(self):
-        # Need non-zero MAD for the detector to do anything, so give each good
-        # row a small distinct offset; row 7 is a huge outlier.
-        arr = np.ones((16, 8), dtype=np.float64)
-        arr += np.arange(16).reshape(-1, 1) * 0.01
-        arr[7, :] = 100.0
-        out = remove_bad_lines(arr, threshold_mad=3.0)
-        # Row 7 should be interpolated from neighbours (≈ avg of rows 6 & 8).
-        assert abs(out[7, 0] - 1.07) < 0.05
-        # Unrelated rows are unchanged.
-        assert np.allclose(out[0], arr[0])
+    def test_detects_and_repairs_only_injected_scanline_segment(self):
+        yy, xx = np.mgrid[:16, :24]
+        arr = (0.02 * yy + 0.01 * xx).astype(np.float64)
+        damaged = arr.copy()
+        damaged[7, 6:14] += 10.0
 
-    def test_single_spike_row_fixed_when_other_rows_are_flat(self):
-        arr = np.ones((16, 8), dtype=np.float64)
-        arr[7, :] = 100.0
+        segments = detect_bad_scanline_segments(damaged, threshold=5.0, method="step")
+        assert [(s.line_index, s.start_col, s.end_col) for s in segments] == [
+            (7, 6, 14)
+        ]
 
-        out = remove_bad_lines(arr, threshold_mad=3.0)
+        out = remove_bad_lines(damaged, threshold_mad=5.0, method="step")
 
-        assert np.allclose(out[7], 1.0)
-        np.testing.assert_array_equal(out[0], arr[0])
+        changed = np.zeros(damaged.shape, dtype=bool)
+        changed[7, 6:14] = True
+        np.testing.assert_array_equal(out[~changed], damaged[~changed])
+        np.testing.assert_allclose(out[7, 6:14], arr[7, 6:14], atol=1e-12)
+
+    def test_mad_outlier_method_repairs_only_segment(self):
+        yy, xx = np.mgrid[:16, :24]
+        arr = (0.02 * yy + 0.01 * xx).astype(np.float64)
+        damaged = arr.copy()
+        damaged[8, 5:11] -= 8.0
+
+        corrected, info = correct_bad_scanline_segments(
+            damaged, threshold=5.0, method="mad", polarity="dark")
+
+        assert len(info.segments) == 1
+        seg = info.segments[0]
+        assert (seg.line_index, seg.start_col, seg.end_col) == (8, 5, 11)
+        outside = np.ones(damaged.shape, dtype=bool)
+        outside[8, 5:11] = False
+        np.testing.assert_array_equal(corrected[outside], damaged[outside])
+        np.testing.assert_allclose(corrected[8, 5:11], arr[8, 5:11], atol=1e-12)
+
+    def test_bright_polarity_detects_positive_not_negative_segment(self):
+        arr = np.ones((14, 20), dtype=np.float64)
+        bright = arr.copy()
+        bright[6, 5:12] += 10.0
+        dark = arr.copy()
+        dark[6, 5:12] -= 10.0
+
+        bright_segments = detect_bad_scanline_segments(
+            bright, threshold=5.0, method="step", polarity="bright")
+        dark_segments = detect_bad_scanline_segments(
+            dark, threshold=5.0, method="step", polarity="bright")
+
+        assert [(s.line_index, s.start_col, s.end_col) for s in bright_segments] == [
+            (6, 5, 12)
+        ]
+        assert dark_segments == []
+
+    def test_dark_polarity_detects_negative_not_positive_segment(self):
+        arr = np.ones((14, 20), dtype=np.float64)
+        bright = arr.copy()
+        bright[6, 5:12] += 10.0
+        dark = arr.copy()
+        dark[6, 5:12] -= 10.0
+
+        dark_segments = detect_bad_scanline_segments(
+            dark, threshold=5.0, method="step", polarity="dark")
+        bright_segments = detect_bad_scanline_segments(
+            bright, threshold=5.0, method="step", polarity="dark")
+
+        assert [(s.line_index, s.start_col, s.end_col) for s in dark_segments] == [
+            (6, 5, 12)
+        ]
+        assert bright_segments == []
+
+    def test_minimum_segment_length_filters_short_candidates(self):
+        arr = np.ones((14, 20), dtype=np.float64)
+        arr[6, 4:7] += 10.0
+        arr[8, 10:18] += 10.0
+
+        segments = detect_bad_scanline_segments(
+            arr,
+            threshold=5.0,
+            method="step",
+            polarity="bright",
+            min_segment_length_px=5,
+        )
+
+        assert [(s.line_index, s.start_col, s.end_col) for s in segments] == [
+            (8, 10, 18)
+        ]
+
+    def test_max_adjacent_bad_lines_skips_unsafe_group(self):
+        arr = np.ones((14, 20), dtype=np.float64)
+        arr[5, 4:12] += 10.0
+        arr[6, 4:12] += 10.0
+        arr[7, 4:12] += 10.0
+
+        corrected, info = correct_bad_scanline_segments(
+            arr,
+            threshold=5.0,
+            method="step",
+            polarity="bright",
+            max_adjacent_bad_lines=2,
+        )
+
+        assert len(info.segments) == 3
+        assert len(info.skipped_segments) == 3
+        assert info.corrected_segments == ()
+        np.testing.assert_array_equal(corrected, arr)
+
+    def test_high_threshold_gives_no_correction(self):
+        arr = np.ones((16, 16), dtype=np.float64)
+        arr[7, 4:9] += 20.0
+
+        corrected, info = correct_bad_scanline_segments(
+            arr, threshold=1e9, method="step")
+
+        assert info.segments == ()
+        np.testing.assert_array_equal(corrected, arr)
+
+    def test_preview_detection_does_not_mutate_image_data(self):
+        arr = np.ones((12, 12), dtype=np.float64)
+        arr[5, 3:8] += 10.0
+        before = arr.copy()
+
+        _segments = detect_bad_scanline_segments(arr, threshold=5.0, method="step")
+
+        np.testing.assert_array_equal(arr, before)
+
+    def test_repair_uses_provided_preview_segments_only(self):
+        arr = np.ones((10, 10), dtype=np.float64)
+        arr[4, 2:5] = 20.0
+        arr[6, 7:9] = 30.0
+        preview_segments = [BadSegment(4, 2, 5, 10.0, "step")]
+
+        corrected, info = correct_bad_scanline_segments(
+            arr, threshold=1e9, method="step")
+        repaired, repair_info = repair_bad_scanline_segments(arr, preview_segments)
+
+        np.testing.assert_array_equal(corrected, arr)
+        assert info.segments == ()
+        assert repair_info.segments == tuple(preview_segments)
+        np.testing.assert_array_equal(repaired[6, 7:9], arr[6, 7:9])
+        assert np.allclose(repaired[4, 2:5], 1.0)
 
     def test_nan_input_safe(self):
         arr = np.full((8, 8), np.nan)

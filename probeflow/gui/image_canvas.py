@@ -151,6 +151,7 @@ class ImageCanvas(QGraphicsView):
 
         self._marker_items: list[ImageCanvas._SpecMarkerItem] = []
         self._zero_marker_items: list[ImageCanvas._ZeroMarkerItem] = []
+        self._bad_segment_items: list[QGraphicsRectItem] = []
 
         self._text_overlay_item = QGraphicsTextItem()
         self._text_overlay_item.setDefaultTextColor(QColor("#cdd6f4"))
@@ -330,6 +331,39 @@ class ImageCanvas(QGraphicsView):
             item.setZValue(20)
             self.scene().addItem(item)
             self._zero_marker_items.append(item)
+
+    # ── bad scan-line segment preview ──────────────────────────────────────────
+
+    def set_bad_segment_overlay(self, segments) -> None:
+        """Show non-destructive bad scan-line segment preview rectangles."""
+        self.clear_bad_segment_overlay()
+        if self._image_size is None:
+            return
+        pen = QPen(QColor("#ff3b30"), 0.0)
+        brush = QBrush(QColor(255, 59, 48, 95))
+        for seg in segments or []:
+            try:
+                row = float(seg.line_index)
+                start = float(seg.start_col)
+                end = float(seg.end_col)
+            except AttributeError:
+                try:
+                    row = float(seg["line_index"])
+                    start = float(seg["start_col"])
+                    end = float(seg["end_col"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            rect = QGraphicsRectItem(QRectF(start, row, max(0.5, end - start), 1.0))
+            rect.setPen(pen)
+            rect.setBrush(brush)
+            rect.setZValue(25)
+            self.scene().addItem(rect)
+            self._bad_segment_items.append(rect)
+
+    def clear_bad_segment_overlay(self) -> None:
+        for item in self._bad_segment_items:
+            self.scene().removeItem(item)
+        self._bad_segment_items.clear()
 
     # ── ROI set display ───────────────────────────────────────────────────────
 

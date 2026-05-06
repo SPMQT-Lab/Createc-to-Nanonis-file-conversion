@@ -152,11 +152,34 @@ def test_main_window_uses_standard_menus_for_secondary_views(qapp):
     assert window._mode == "tv"
     action("Tools", "Developer tools").trigger()
     assert window._mode == "dev"
-    action("Tools", "Definitions / Debug info").trigger()
-    assert window._mode == "defs"
+    action("Help", "Definitions").trigger()
+    assert window._mode == "dev"
+    assert window._definitions_dialog.isVisible()
+    definitions_dialog = window._definitions_dialog
+    action("Help", "Definitions").trigger()
+    assert window._definitions_dialog is definitions_dialog
+    definitions_dialog.close()
     action("Convert", "Convert Createc .dat to .sxm...").trigger()
     assert window._mode == "convert"
     action("View", "Browse").trigger()
     assert window._mode == "browse"
 
     window.close()
+
+
+def test_definitions_content_includes_bad_scanline_terms():
+    from probeflow.gui import _legacy as gui_mod
+
+    definitions = gui_mod._DEFINITIONS_HTML
+
+    for term in (
+        "Bad scan-line segment",
+        "Threshold",
+        "Minimum segment length (px)",
+        "Maximum adjacent bad lines",
+        "Bright bad segment",
+        "Dark bad segment",
+        "Preview detection",
+        "Apply correction",
+    ):
+        assert term in definitions

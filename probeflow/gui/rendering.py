@@ -349,7 +349,11 @@ def render_with_processing(
     """Apply the full processing pipeline to *arr* then render to a PIL Image.
 
     processing keys (all optional):
-        remove_bad_lines : bool
+        remove_bad_lines : None | 'step' | 'mad'
+        remove_bad_lines_threshold : float
+        remove_bad_lines_polarity : 'bright' | 'dark'
+        remove_bad_lines_min_segment_length_px : int
+        remove_bad_lines_max_adjacent_bad_lines : int
         align_rows       : str | None  — 'median' | 'mean' | 'linear'
         bg_order         : None | 1 | 2
         facet_level      : bool
